@@ -74,7 +74,32 @@
       }
     ],
     "migrations": [
-      "0001_create_project_skills.sql"
+      "0001_create_project_skills.sql",
+      "0002_create_project_skill_files.sql",
+      "0003_link_skill_to_document.sql"
+    ]
+  },
+  "frontend": {
+    "remoteEntryUrl": "/plugins/com.gorlix.project-skills/remoteEntry.js",
+    "extensionPoints": [
+      {
+        "point": "project.page",
+        "component": "ProjectSkillsPage"
+      },
+      {
+        "point": "sidebar.project.section",
+        "component": "ProjectSkillsSidebarSection"
+      }
+    ],
+    "navItems": [
+      {
+        "scope": "project",
+        "slug": "skills",
+        "label": "Skills",
+        "icon": "Sparkles",
+        "component": "ProjectSkillsPage",
+        "hidden": true
+      }
     ]
   }
 }

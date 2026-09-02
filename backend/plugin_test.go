@@ -9,14 +9,30 @@ import (
 )
 
 const testProjectID = "project-1"
+const testDocID = "doc-1"
+
+// testDocContent is a BlockNote block array (as the host's real
+// `documents.content` jsonb column stores it) whose markdown rendering is
+// exactly "1. Run tests\n2. Tag release" — see TestGetSkillRendersValidSkillMD.
+const testDocContent = `[
+	{"type":"numberedListItem","content":[{"type":"text","text":"Run tests","styles":{}}]},
+	{"type":"numberedListItem","content":[{"type":"text","text":"Tag release","styles":{}}]}
+]`
 
 func setupPlugin(t *testing.T) *plugintest.Context {
 	t.Helper()
 	tc := plugintest.NewContext(t)
 	tc.DB.SeedRows(
 		"project_skills",
-		[]string{"id", "project_id", "name", "description", "triggers", "body", "created_by", "created_at", "updated_at"},
+		[]string{"id", "project_id", "name", "description", "triggers", "created_by", "created_at", "updated_at", "doc_id"},
 		nil,
+	)
+	tc.DB.SeedRows(
+		"documents",
+		[]string{"id", "project_id", "content", "deleted_at"},
+		[][]any{
+			{testDocID, testProjectID, testDocContent, nil},
+		},
 	)
 
 	var p projectSkillsPlugin
@@ -42,7 +58,7 @@ func TestCreateAppliesPacaPrefixAndListsSkill(t *testing.T) {
 	create := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
 		"name":        "new-docker-service",
 		"description": "Scaffold a new Dockerized service for this project.",
-		"body":        "Follow the project's service template exactly.",
+		"doc_id":      testDocID,
 	}))
 	if create.StatusCode != 201 {
 		t.Fatalf("expected 201, got %d: %s", create.StatusCode, create.BodyString())
@@ -56,6 +72,9 @@ func TestCreateAppliesPacaPrefixAndListsSkill(t *testing.T) {
 	}
 	if createEnv.Data.Name != "paca-new-docker-service" {
 		t.Fatalf("expected name to be prefixed with paca-, got %q", createEnv.Data.Name)
+	}
+	if createEnv.Data.DocID != testDocID {
+		t.Fatalf("expected doc_id %q, got %q", testDocID, createEnv.Data.DocID)
 	}
 
 	list := tc.Call("GET", "/projects/:projectId/skills", req())
@@ -77,7 +96,7 @@ func TestCreateRejectsReservedTriggerPrefix(t *testing.T) {
 	create := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
 		"name":        "trigger-chat",
 		"description": "Should be rejected.",
-		"body":        "n/a",
+		"doc_id":      testDocID,
 	}))
 	if create.StatusCode != 400 {
 		t.Fatalf("expected 400 for reserved prefix, got %d: %s", create.StatusCode, create.BodyString())
@@ -90,10 +109,23 @@ func TestCreateRejectsInvalidSlug(t *testing.T) {
 	create := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
 		"name":        "Not A Slug!",
 		"description": "Should be rejected.",
-		"body":        "n/a",
+		"doc_id":      testDocID,
 	}))
 	if create.StatusCode != 400 {
 		t.Fatalf("expected 400 for invalid slug, got %d: %s", create.StatusCode, create.BodyString())
+	}
+}
+
+func TestCreateRejectsUnknownDocID(t *testing.T) {
+	tc := setupPlugin(t)
+
+	create := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
+		"name":        "docker-service",
+		"description": "Should be rejected.",
+		"doc_id":      "does-not-exist",
+	}))
+	if create.StatusCode != 400 {
+		t.Fatalf("expected 400 for unknown doc_id, got %d: %s", create.StatusCode, create.BodyString())
 	}
 }
 
@@ -103,7 +135,7 @@ func TestCreateDuplicateNameConflicts(t *testing.T) {
 	body := map[string]any{
 		"name":        "docs-review",
 		"description": "Review docs.",
-		"body":        "n/a",
+		"doc_id":      testDocID,
 	}
 	first := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(body))
 	if first.StatusCode != 201 {
@@ -123,7 +155,7 @@ func TestGetSkillRendersValidSkillMD(t *testing.T) {
 		"name":        "release-checklist",
 		"description": "Walk through this project's release checklist.",
 		"triggers":    []string{"/release"},
-		"body":        "1. Run tests\n2. Tag release",
+		"doc_id":      testDocID,
 	}))
 
 	get := tc.Call("GET", "/projects/:projectId/skills/:name", plugintest.Request{
@@ -157,7 +189,7 @@ func TestUpdateAndDeleteSkill(t *testing.T) {
 	_ = tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
 		"name":        "onboarding",
 		"description": "Original description.",
-		"body":        "Original body.",
+		"doc_id":      testDocID,
 	}))
 
 	update := tc.Call("PATCH", "/projects/:projectId/skills/:name", plugintest.Request{
@@ -165,10 +197,16 @@ func TestUpdateAndDeleteSkill(t *testing.T) {
 		PathParams: map[string]string{"name": "paca-onboarding"},
 	}.WithJSONBody(map[string]any{
 		"description": "Updated description.",
-		"body":        "Updated body.",
 	}))
 	if update.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d: %s", update.StatusCode, update.BodyString())
+	}
+	var updateEnv struct {
+		Data skillDetail `json:"data"`
+	}
+	_ = json.Unmarshal(update.Body, &updateEnv)
+	if updateEnv.Data.DocID != testDocID {
+		t.Fatalf("expected doc_id to remain %q after update, got %q", testDocID, updateEnv.Data.DocID)
 	}
 
 	remove := tc.Call("DELETE", "/projects/:projectId/skills/:name", plugintest.Request{
@@ -210,9 +248,9 @@ func TestMissingProjectScopeReturns400(t *testing.T) {
 		req    plugintest.Request
 	}{
 		{"GET", "/projects/:projectId/skills", noScope},
-		{"POST", "/projects/:projectId/skills", noScope.WithJSONBody(map[string]any{"name": "x", "description": "d", "body": "b"})},
+		{"POST", "/projects/:projectId/skills", noScope.WithJSONBody(map[string]any{"name": "x", "description": "d", "doc_id": testDocID})},
 		{"GET", "/projects/:projectId/skills/:name", plugintest.Request{Caller: noScope.Caller, PathParams: map[string]string{"name": "paca-x"}}},
-		{"PATCH", "/projects/:projectId/skills/:name", plugintest.Request{Caller: noScope.Caller, PathParams: map[string]string{"name": "paca-x"}}.WithJSONBody(map[string]any{"description": "d", "body": "b"})},
+		{"PATCH", "/projects/:projectId/skills/:name", plugintest.Request{Caller: noScope.Caller, PathParams: map[string]string{"name": "paca-x"}}.WithJSONBody(map[string]any{"description": "d"})},
 		{"DELETE", "/projects/:projectId/skills/:name", plugintest.Request{Caller: noScope.Caller, PathParams: map[string]string{"name": "paca-x"}}},
 	}
 	for _, c := range cases {
@@ -230,11 +268,11 @@ func TestCreateValidationErrors(t *testing.T) {
 		name string
 		body map[string]any
 	}{
-		{"missing name", map[string]any{"description": "d", "body": "b"}},
-		{"missing description", map[string]any{"name": "valid-name", "body": "b"}},
-		{"blank description", map[string]any{"name": "valid-name", "description": "   ", "body": "b"}},
-		{"missing body", map[string]any{"name": "valid-name", "description": "d"}},
-		{"blank body", map[string]any{"name": "valid-name", "description": "d", "body": "   "}},
+		{"missing name", map[string]any{"description": "d", "doc_id": testDocID}},
+		{"missing description", map[string]any{"name": "valid-name", "doc_id": testDocID}},
+		{"blank description", map[string]any{"name": "valid-name", "description": "   ", "doc_id": testDocID}},
+		{"missing doc_id", map[string]any{"name": "valid-name", "description": "d"}},
+		{"blank doc_id", map[string]any{"name": "valid-name", "description": "d", "doc_id": "   "}},
 	}
 	for _, c := range cases {
 		res := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(c.body))
@@ -259,17 +297,15 @@ func TestCreateInvalidJSONBodyReturns400(t *testing.T) {
 func TestUpdateValidationErrors(t *testing.T) {
 	tc := setupPlugin(t)
 	_ = tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
-		"name": "editable", "description": "d", "body": "b",
+		"name": "editable", "description": "d", "doc_id": testDocID,
 	}))
 
 	cases := []struct {
 		name string
 		body map[string]any
 	}{
-		{"missing description", map[string]any{"body": "b"}},
-		{"blank description", map[string]any{"description": "  ", "body": "b"}},
-		{"missing body", map[string]any{"description": "d"}},
-		{"blank body", map[string]any{"description": "d", "body": "  "}},
+		{"missing description", map[string]any{}},
+		{"blank description", map[string]any{"description": "  "}},
 	}
 	for _, c := range cases {
 		res := tc.Call("PATCH", "/projects/:projectId/skills/:name", plugintest.Request{
@@ -299,7 +335,7 @@ func TestShutdownDoesNotPanic(t *testing.T) {
 	tc := plugintest.NewContext(t)
 	tc.DB.SeedRows(
 		"project_skills",
-		[]string{"id", "project_id", "name", "description", "triggers", "body", "created_by", "created_at", "updated_at"},
+		[]string{"id", "project_id", "name", "description", "triggers", "created_by", "created_at", "updated_at", "doc_id"},
 		nil,
 	)
 	var p projectSkillsPlugin
@@ -347,6 +383,44 @@ func TestNormalizeNameEdgeCases(t *testing.T) {
 		}
 		if got != c.want {
 			t.Errorf("normalizeName(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestBlocksToMarkdown(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"empty", "", ""},
+		{"null", "null", ""},
+		{
+			"heading and paragraph",
+			`[{"type":"heading","props":{"level":2},"content":[{"type":"text","text":"Steps","styles":{}}]},
+			  {"type":"paragraph","content":[{"type":"text","text":"Do the thing.","styles":{}}]}]`,
+			"## Steps\n\nDo the thing.",
+		},
+		{
+			"bold and code marks",
+			`[{"type":"paragraph","content":[
+				{"type":"text","text":"Run ","styles":{}},
+				{"type":"text","text":"go test","styles":{"code":true}},
+				{"type":"text","text":" first","styles":{"bold":true}}
+			]}]`,
+			"Run `go test`** first**",
+		},
+		{
+			"bullet list",
+			`[{"type":"bulletListItem","content":[{"type":"text","text":"a","styles":{}}]},
+			  {"type":"bulletListItem","content":[{"type":"text","text":"b","styles":{}}]}]`,
+			"- a\n- b",
+		},
+	}
+	for _, c := range cases {
+		got := blocksToMarkdown([]byte(c.json))
+		if got != c.want {
+			t.Errorf("%s: blocksToMarkdown = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

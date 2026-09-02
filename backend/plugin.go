@@ -34,16 +34,18 @@ const (
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-// skillColumns lists project_skills' columns in the exact order the table
-// was created in (see migrations/0001_create_project_skills.sql). Every
-// SELECT against this table below uses this full, fixed column list — not
-// because Postgres needs it (a real SELECT projects exactly the columns you
-// name), but because plugintest's InMemoryDB mock always returns a matched
-// row in the table's physical column order regardless of what the SELECT
-// clause asked for. Selecting (and indexing into results) in this same
-// order keeps positional access correct under both the mock and the real
-// database.
-const skillColumns = "id, project_id, name, description, triggers, body, created_by, created_at, updated_at"
+// skillColumns lists project_skills' columns in the exact physical order
+// Postgres reports them in after migrations/0001-0003: 0003 dropped the
+// original `body` column and appended `doc_id` at the end, so the position
+// of every column below matches the table's *current* shape, not creation
+// order. Every SELECT against this table below uses this full, fixed column
+// list — not because Postgres needs it (a real SELECT projects exactly the
+// columns you name), but because plugintest's InMemoryDB mock always
+// returns a matched row in the table's physical column order regardless of
+// what the SELECT clause asked for. Selecting (and indexing into results)
+// in this same order keeps positional access correct under both the mock
+// and the real database.
+const skillColumns = "id, project_id, name, description, triggers, created_by, created_at, updated_at, doc_id"
 
 const (
 	colID = iota
@@ -51,10 +53,10 @@ const (
 	colName
 	colDescription
 	colTriggers
-	colBody
 	colCreatedBy
 	colCreatedAt
 	colUpdatedAt
+	colDocID
 )
 
 type projectSkillsPlugin struct {
@@ -97,6 +99,7 @@ type skillSummary struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Triggers    []string `json:"triggers"`
+	DocID       string   `json:"doc_id"`
 	CreatedAt   string   `json:"created_at"`
 	UpdatedAt   string   `json:"updated_at"`
 }
@@ -105,6 +108,7 @@ type skillDetail struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
 	Triggers    []string `json:"triggers"`
+	DocID       string   `json:"doc_id"`
 	Content     string   `json:"content"`
 }
 
@@ -131,6 +135,7 @@ func (p *projectSkillsPlugin) listSkills(req *plugin.Request, res *plugin.Respon
 			Name:        toString(row, colName),
 			Description: toString(row, colDescription),
 			Triggers:    decodeTriggers(toString(row, colTriggers)),
+			DocID:       toString(row, colDocID),
 			CreatedAt:   toString(row, colCreatedAt),
 			UpdatedAt:   toString(row, colUpdatedAt),
 		})
@@ -150,7 +155,7 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 		Name        string   `json:"name"`
 		Description string   `json:"description"`
 		Triggers    []string `json:"triggers"`
-		Body        string   `json:"body"`
+		DocID       string   `json:"doc_id"`
 	}
 
 	payload, err := plugin.JSONBody[createBody](req)
@@ -169,9 +174,29 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 		res.Error(400, "description is required")
 		return
 	}
-	body := strings.TrimSpace(payload.Body)
-	if body == "" {
-		res.Error(400, "body is required")
+	docID := strings.TrimSpace(payload.DocID)
+	if docID == "" {
+		res.Error(400, "doc_id is required")
+		return
+	}
+
+	// The body lives entirely in that Document — never authored by this
+	// plugin — so the only thing worth checking here is that it's a real,
+	// non-deleted document belonging to this same project (read-only access
+	// to the host's own `documents` table; see backend/README or the
+	// runtime's sensitiveTableColumns/coreSensitiveFields for why an
+	// unqualified SELECT against a core table is permitted for plugins).
+	docCheck, err := p.db.Query(
+		"SELECT 1 FROM documents WHERE id = $1 AND project_id = $2 AND deleted_at IS NULL",
+		docID, projectID,
+	)
+	if err != nil {
+		p.log.Error("createSkill doc check failed: " + err.Error())
+		res.Error(500, "failed to create skill")
+		return
+	}
+	if len(docCheck.Rows) == 0 {
+		res.Error(400, "doc_id does not refer to an existing document in this project")
 		return
 	}
 
@@ -193,10 +218,10 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	_, err = p.db.Exec(
-		`INSERT INTO project_skills (id, project_id, name, description, triggers, body, created_by, created_at, updated_at)
+		`INSERT INTO project_skills (id, project_id, name, description, triggers, created_by, created_at, updated_at, doc_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.NewString(), projectID, name, description, string(triggersJSON), body,
-		req.Caller.CallerID, now, now,
+		uuid.NewString(), projectID, name, description, string(triggersJSON),
+		req.Caller.CallerID, now, now, docID,
 	)
 	if err != nil {
 		p.log.Error("createSkill insert failed: " + err.Error())
@@ -204,12 +229,49 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 		return
 	}
 
+	content, err := p.renderSkillContent(name, description, payload.Triggers, docID)
+	if err != nil {
+		p.log.Error("createSkill content render failed: " + err.Error())
+	}
 	res.JSON(201, successEnvelope{Success: true, Data: skillDetail{
 		Name:        name,
 		Description: description,
 		Triggers:    payload.Triggers,
-		Content:     renderSkillMD(name, description, payload.Triggers, body),
+		DocID:       docID,
+		Content:     content,
 	}})
+}
+
+// documentsColumns/colDocContent mirror skillColumns/colX above: like
+// plugintest's InMemoryDB mock, this SELECT names its full physical column
+// list and indexes results positionally rather than trusting the SELECT
+// clause to control which columns come back.
+const documentsColumns = "id, project_id, content, deleted_at"
+const colDocContent = 2
+
+// renderSkillContent fetches the linked document's current block content
+// and converts it to a full SKILL.md (frontmatter + markdown body).
+func (p *projectSkillsPlugin) renderSkillContent(name, description string, triggers []string, docID string) (string, error) {
+	rows, err := p.db.Query("SELECT "+documentsColumns+" FROM documents WHERE id = $1 AND deleted_at IS NULL", docID)
+	if err != nil {
+		return renderSkillMD(name, description, triggers, ""), err
+	}
+	if len(rows.Rows) == 0 {
+		return renderSkillMD(name, description, triggers, ""), nil
+	}
+	var raw []byte
+	switch v := rows.Rows[0][colDocContent].(type) {
+	case string:
+		raw = []byte(v)
+	case []byte:
+		raw = v
+	default:
+		if v != nil {
+			b, _ := json.Marshal(v)
+			raw = b
+		}
+	}
+	return renderSkillMD(name, description, triggers, blocksToMarkdown(raw)), nil
 }
 
 func (p *projectSkillsPlugin) getSkill(req *plugin.Request, res *plugin.Response) {
@@ -236,11 +298,17 @@ func (p *projectSkillsPlugin) getSkill(req *plugin.Request, res *plugin.Response
 
 	row := rows.Rows[0]
 	triggers := decodeTriggers(toString(row, colTriggers))
+	docID := toString(row, colDocID)
+	content, err := p.renderSkillContent(toString(row, colName), toString(row, colDescription), triggers, docID)
+	if err != nil {
+		p.log.Error("getSkill content render failed: " + err.Error())
+	}
 	res.JSON(200, successEnvelope{Success: true, Data: skillDetail{
 		Name:        toString(row, colName),
 		Description: toString(row, colDescription),
 		Triggers:    triggers,
-		Content:     renderSkillMD(toString(row, colName), toString(row, colDescription), triggers, toString(row, colBody)),
+		DocID:       docID,
+		Content:     content,
 	}})
 }
 
@@ -255,7 +323,6 @@ func (p *projectSkillsPlugin) updateSkill(req *plugin.Request, res *plugin.Respo
 	type updateBody struct {
 		Description string   `json:"description"`
 		Triggers    []string `json:"triggers"`
-		Body        string   `json:"body"`
 	}
 
 	payload, err := plugin.JSONBody[updateBody](req)
@@ -268,19 +335,32 @@ func (p *projectSkillsPlugin) updateSkill(req *plugin.Request, res *plugin.Respo
 		res.Error(400, "description is required")
 		return
 	}
-	body := strings.TrimSpace(payload.Body)
-	if body == "" {
-		res.Error(400, "body is required")
-		return
-	}
 
 	triggersJSON, _ := json.Marshal(payload.Triggers)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
+	// doc_id is immutable once set (same "no rename after creation" rule as
+	// name) — the body itself is edited entirely through the host's own
+	// Documentation page, never through this route.
+	rows, err := p.db.Query(
+		"SELECT "+skillColumns+" FROM project_skills WHERE project_id = $1 AND name = $2",
+		projectID, name,
+	)
+	if err != nil {
+		p.log.Error("updateSkill lookup failed: " + err.Error())
+		res.Error(500, "failed to update skill")
+		return
+	}
+	if len(rows.Rows) == 0 {
+		res.Error(404, "skill not found")
+		return
+	}
+	docID := toString(rows.Rows[0], colDocID)
+
 	rowsUpdated, err := p.db.Exec(
-		`UPDATE project_skills SET description = $1, triggers = $2, body = $3, updated_at = $4
-		 WHERE project_id = $5 AND name = $6`,
-		description, string(triggersJSON), body, now, projectID, name,
+		`UPDATE project_skills SET description = $1, triggers = $2, updated_at = $3
+		 WHERE project_id = $4 AND name = $5`,
+		description, string(triggersJSON), now, projectID, name,
 	)
 	if err != nil {
 		p.log.Error("updateSkill failed: " + err.Error())
@@ -292,14 +372,24 @@ func (p *projectSkillsPlugin) updateSkill(req *plugin.Request, res *plugin.Respo
 		return
 	}
 
+	content, err := p.renderSkillContent(name, description, payload.Triggers, docID)
+	if err != nil {
+		p.log.Error("updateSkill content render failed: " + err.Error())
+	}
 	res.JSON(200, successEnvelope{Success: true, Data: skillDetail{
 		Name:        name,
 		Description: description,
 		Triggers:    payload.Triggers,
-		Content:     renderSkillMD(name, description, payload.Triggers, body),
+		DocID:       docID,
+		Content:     content,
 	}})
 }
 
+// deleteSkill removes only this plugin's own project_skills row — the linked
+// Document is left untouched. It's a first-class Document in its own right
+// (visible and editable in the Documentation feature independent of this
+// plugin), so deleting the skill link shouldn't silently delete a document
+// the user may still want.
 func (p *projectSkillsPlugin) deleteSkill(req *plugin.Request, res *plugin.Response) {
 	projectID := req.Caller.ProjectID
 	name := req.PathParam("name")
