@@ -1,3 +1,7 @@
 dist/
 *.wasm
 coverage.out
+node_modules/
+@mf-types/
+@mf-types.zip
+@mf-types.d.ts
