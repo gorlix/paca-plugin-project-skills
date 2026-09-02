@@ -139,8 +139,10 @@ real running instance by driving the actual MCP server binary
 
 ## Testing
 
-- `go test -race ./...` — 86.5% coverage as of this writing, including every
-  handler's project-scope guard, field validation, and error paths.
+- `go test -race ./...` — 76.4% coverage as of this writing, including every
+  handler's project-scope guard, field validation, and error paths. Weakest
+  spot: `markdown.go`'s less common block/mark branches (nested lists,
+  checklists, links, italic/strike) are exercised by only a few cases so far.
 - `golangci-lint run` — clean.
 - Verified against a real `docker compose -f deploy/docker-compose.dev.yml`
   Paca instance: installed via the manual dev flow (copy `backend.wasm` +

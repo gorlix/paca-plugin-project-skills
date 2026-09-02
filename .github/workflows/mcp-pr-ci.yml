@@ -1,0 +1,53 @@
+name: mcp-pr-ci
+
+on:
+  pull_request:
+    paths:
+      - "mcp/**"
+      - ".github/workflows/mcp-pr-ci.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "mcp/**"
+      - ".github/workflows/mcp-pr-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcp-pr-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mcp-quality:
+    name: Typecheck and build MCP server
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: mcp
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mcp/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
