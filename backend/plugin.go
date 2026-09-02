@@ -66,11 +66,19 @@ func (p *projectSkillsPlugin) Init(ctx *plugin.Context) error {
 	p.db = ctx.DB()
 	p.log = ctx.Log()
 
-	ctx.Route("GET", "/skills", p.listSkills)
-	ctx.Route("POST", "/skills", p.createSkill)
-	ctx.Route("GET", "/skills/:name", p.getSkill)
-	ctx.Route("PATCH", "/skills/:name", p.updateSkill)
-	ctx.Route("DELETE", "/skills/:name", p.deleteSkill)
+	// Routes embed :projectId (rather than just /skills) because the host's
+	// plugin proxy only resolves req.Caller.ProjectID when the manifest's
+	// requirePermissions(scope=project) route path contains a :projectId
+	// path segment — confirmed against services/api's ProxyRequest handler
+	// (internal/transport/http/handler/plugin_handler.go's projectMemberParam),
+	// which looks up that exact param name (default "projectId") in the
+	// matched route's path params. Omitting it silently leaves
+	// Caller.ProjectID empty on every request.
+	ctx.Route("GET", "/projects/:projectId/skills", p.listSkills)
+	ctx.Route("POST", "/projects/:projectId/skills", p.createSkill)
+	ctx.Route("GET", "/projects/:projectId/skills/:name", p.getSkill)
+	ctx.Route("PATCH", "/projects/:projectId/skills/:name", p.updateSkill)
+	ctx.Route("DELETE", "/projects/:projectId/skills/:name", p.deleteSkill)
 
 	p.log.Info("com.gorlix.project-skills initialized")
 	return nil

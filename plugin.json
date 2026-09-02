@@ -9,7 +9,7 @@
     "routes": [
       {
         "method": "GET",
-        "path": "/skills",
+        "path": "/projects/:projectId/skills",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
@@ -22,7 +22,7 @@
       },
       {
         "method": "POST",
-        "path": "/skills",
+        "path": "/projects/:projectId/skills",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
@@ -35,7 +35,7 @@
       },
       {
         "method": "GET",
-        "path": "/skills/:name",
+        "path": "/projects/:projectId/skills/:name",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
@@ -48,7 +48,7 @@
       },
       {
         "method": "PATCH",
-        "path": "/skills/:name",
+        "path": "/projects/:projectId/skills/:name",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
@@ -61,7 +61,7 @@
       },
       {
         "method": "DELETE",
-        "path": "/skills/:name",
+        "path": "/projects/:projectId/skills/:name",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },
