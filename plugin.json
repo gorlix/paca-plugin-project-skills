@@ -2,7 +2,7 @@
   "id": "com.gorlix.project-skills",
   "displayName": "Project Skills",
   "description": "Let a project register its own Agent Skills (agentskills.io format) and serve them over HTTP to any compliant client.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "minCoreVersion": "0.13.3",
   "permissions": ["db.read", "db.write"],
   "backend": {
@@ -78,6 +78,9 @@
       "0002_create_project_skill_files.sql",
       "0003_link_skill_to_document.sql"
     ]
+  },
+  "mcp": {
+    "remoteEntryUrl": "/plugins-mcp/com.gorlix.project-skills/mcp.js"
   },
   "frontend": {
     "remoteEntryUrl": "/plugins/com.gorlix.project-skills/remoteEntry.js",

@@ -74,11 +74,11 @@ testing against a real running instance, not by unit tests (which construct
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/projects/:projectId/skills` | List the project's skills (name, description, triggers, timestamps). |
-| `POST` | `/projects/:projectId/skills` | Create a skill. Body: `{ "name", "description", "triggers"?, "body" }`. |
+| `GET` | `/projects/:projectId/skills` | List the project's skills (name, description, triggers, `doc_id`, timestamps). |
+| `POST` | `/projects/:projectId/skills` | Create a skill. Body: `{ "name", "description", "triggers"?, "doc_id" }`. |
 | `GET` | `/projects/:projectId/skills/:name` | Fetch one skill, including its rendered `SKILL.md` content. |
-| `PATCH` | `/projects/:projectId/skills/:name` | Replace a skill's `description`, `triggers`, and `body`. |
-| `DELETE` | `/projects/:projectId/skills/:name` | Delete a skill. |
+| `PATCH` | `/projects/:projectId/skills/:name` | Update a skill's `description` and `triggers` (`doc_id` is immutable once set). |
+| `DELETE` | `/projects/:projectId/skills/:name` | Delete a skill (leaves its linked Document untouched — see below). |
 
 `name` is normalized server-side: lowercased, validated as
 lowercase-alphanumeric segments joined by single hyphens, and prefixed with
@@ -87,11 +87,55 @@ is stored and returned as `paca-new-docker-service`). Names starting with
 `paca-trigger-` are rejected — that sub-namespace is reserved for Paca's own
 scaffolding skills.
 
-`GET /projects/:projectId/skills/:name` and the create/update responses include a `content`
-field: a complete, server-rendered `SKILL.md` document (YAML frontmatter +
-markdown body), built from the structured fields rather than accepted as raw
-text from the client — this guarantees every stored skill has valid
-frontmatter.
+### A skill's body is a real project Document, not text this plugin owns
+
+`doc_id` must reference an existing, non-deleted Document in the same
+project (validated with a read-only lookup against the host's own
+`documents` table — permitted for plugin backends since `documents` has no
+`coreSensitiveFields` declared; see `services/api`'s plugin runtime). The
+skill's actual instructions are whatever that Document's content is, edited
+through Paca's own Documentation feature (real BlockNote editor) — this
+plugin never renders a body editor of its own.
+
+`GET /projects/:projectId/skills/:name` (and the create/update responses)
+include a `content` field: a complete `SKILL.md` document (YAML frontmatter,
+built from the structured fields, plus the linked Document's content
+converted from BlockNote block JSON to markdown by `backend/markdown.go`) —
+this is what an external `agentskills.io`-compliant client or the MCP tools
+below actually consume.
+
+## Frontend
+
+Two components (Module Federation, `frontend/`): a `sidebar.project.section`
+skill tree matching the Documentation section's own look, and a
+`project.page` (hidden from the auto-generated Plugins nav — the sidebar
+section already provides navigation) with a small name/description/triggers
+form and an "Open SKILL.md" button that navigates straight into the host's
+native Documentation editor. No custom rich-text editor here — see "A
+skill's body is a real project Document" above for why.
+
+> This currently **requires an unreleased host fix**: stock Paca-AI/paca
+> doesn't inject `api`/`ui`/`meta` props into `sidebar.project.section`
+> components at all (only `project.page` gets them, via
+> `usePluginBaseProps` in the routed page). Without that fix this plugin's
+> sidebar section renders empty. Not yet upstreamed.
+
+## MCP tools
+
+Two read-only tools (`mcp/`, loaded by Paca's MCP server as a plain Node ESM
+module — see `docs/plugins/mcp-plugin-system.md` in `Paca-AI/paca`), so an
+AI client can discover and read a project's skills without raw HTTP:
+
+| Tool | Description |
+|---|---|
+| `project_skills_list` | List a project's skills (name, description, triggers). |
+| `project_skills_get` | Fetch one skill's full `SKILL.md` content by name. |
+
+Both simply call this plugin's own `GET /projects/:projectId/skills[...]`
+routes via `PluginAPIClient` — no separate backend logic. Verified against a
+real running instance by driving the actual MCP server binary
+(`apps/mcp/build/index.js`) over stdio with real JSON-RPC `initialize` /
+`tools/call` messages, not just a direct function-call test.
 
 ## Testing
 
@@ -139,22 +183,33 @@ paca-plugin-project-skills/
   backend/
     main.go              ← WASM entry point
     plugin.go            ← route handlers, naming/rendering logic
+    markdown.go          ← BlockNote block JSON → markdown, for SKILL.md rendering
     plugin_test.go
     go.mod
     migrations/
       0001_create_project_skills.sql
+      0002_create_project_skill_files.sql   ← unused so far, see Future work
+      0003_link_skill_to_document.sql
+  frontend/
+    src/
+      ProjectSkillsSidebarSection.tsx   ← sidebar.project.section
+      ProjectSkillsPage.tsx             ← project.page (metadata form)
+      constants.ts
+  mcp/
+    src/index.ts          ← project_skills_list / project_skills_get
 ```
 
 ## Future work
 
-Not in this first version, deliberately (avoid premature scope beyond
-what issue #453 asked for):
-
-- **Frontend UI**: a project settings tab to create/edit/delete skills
-  without raw HTTP — today this plugin is API-only.
-- **MCP tools**: `list_project_skills` / `get_project_skill` as MCP tools
-  (`mcp.tools` in the manifest) so an AI client can read them without raw
-  HTTP.
+- **Multi-file skills** (`references/`, `scripts/`, `assets/` per the
+  agentskills.io spec): `project_skill_files` (migration 0002) exists but has
+  no handler yet. Reference docs map cleanly onto more Documents in the
+  skill's own doc subfolder; raw files (scripts, binaries) don't fit
+  Documentation's BlockNote model at all — doc file attachments
+  (`docfile://` URIs) are the plausible path, but the plugin backend has no
+  storage/blob or outbound HTTP access (only DB + KV), so any such bundling
+  would have to happen client-side, not in `backend/plugin.go`. Not
+  designed yet.
 - **Client-side download integration**: `scripts/install-paca-skills.sh`
   in `Paca-AI/paca` only ever fetches Paca's bundled skills and
   `skills.baseUrl`-wired plugin skills (`GET /api/v1/skills`) — it has no
