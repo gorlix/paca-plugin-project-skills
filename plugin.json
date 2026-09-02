@@ -1,0 +1,80 @@
+{
+  "id": "com.gorlix.project-skills",
+  "displayName": "Project Skills",
+  "description": "Let a project register its own Agent Skills (agentskills.io format) and serve them over HTTP to any compliant client.",
+  "version": "0.1.0",
+  "minCoreVersion": "0.13.3",
+  "permissions": ["db.read", "db.write"],
+  "backend": {
+    "routes": [
+      {
+        "method": "GET",
+        "path": "/skills",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.read"]
+          }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/skills",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.write"]
+          }
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/skills/:name",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.read"]
+          }
+        ]
+      },
+      {
+        "method": "PATCH",
+        "path": "/skills/:name",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.write"]
+          }
+        ]
+      },
+      {
+        "method": "DELETE",
+        "path": "/skills/:name",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.write"]
+          }
+        ]
+      }
+    ],
+    "migrations": [
+      "0001_create_project_skills.sql"
+    ]
+  }
+}
