@@ -145,7 +145,23 @@ paca-plugin-project-skills/
       0001_create_project_skills.sql
 ```
 
-No frontend or MCP surface in this first version — see the "Future work"
-section of the issue discussion for `mcp.tools` as a possible follow-up
-(exposing `list_project_skills` / `get_project_skill` as MCP tools so an AI
-client can read them without raw HTTP).
+## Future work
+
+Not in this first version, deliberately (avoid premature scope beyond
+what issue #453 asked for):
+
+- **Frontend UI**: a project settings tab to create/edit/delete skills
+  without raw HTTP — today this plugin is API-only.
+- **MCP tools**: `list_project_skills` / `get_project_skill` as MCP tools
+  (`mcp.tools` in the manifest) so an AI client can read them without raw
+  HTTP.
+- **Client-side download integration**: `scripts/install-paca-skills.sh`
+  in `Paca-AI/paca` only ever fetches Paca's bundled skills and
+  `skills.baseUrl`-wired plugin skills (`GET /api/v1/skills`) — it has no
+  awareness of this plugin's own per-project skills at all. A follow-up
+  (either a flag on that script, or a small standalone tool) would call
+  this plugin's `GET /projects/:projectId/skills` + `GET .../skills/:name`
+  and write the results into the same `agentskills.io` folder layout that
+  script now writes for bundled skills (see its own non-lossy rewrite),
+  so a project's custom skills end up on disk the same way as Paca's
+  built-in ones.
