@@ -43,7 +43,7 @@ In short: `skills.baseUrl` is for a plugin's own static, versioned,
 install-time skill bundle (see `paca-plugin-example`'s
 `skills/paca-hello-greeting/`) — not for skills a project's members create
 and edit at runtime. This plugin's skills are instead stored in its own
-database table and served from its own `/api/v1/plugins/com.gorlix.project-skills/skills`
+database table and served from its own `/api/v1/plugins/com.gorlix.project-skills/projects/:projectId/skills`
 routes (see below). A client that wants these skills on disk in
 `agentskills.io` layout (e.g. to drop them into a `.claude/skills/` folder)
 needs to call this plugin's routes directly — it is a separate integration
@@ -61,13 +61,24 @@ the top of `docs/plugins/skills-plugin-system.md`).
 All routes are scoped to the calling project (`req.Caller.ProjectID`) and
 namespaced under `/api/v1/plugins/com.gorlix.project-skills/`.
 
+The manifest declares every route with a `:projectId` path segment
+(`/projects/:projectId/skills[...]`, not just `/skills[...]`) — this is
+required for the host to resolve `Caller.ProjectID` at all. Confirmed by
+reading `services/api`'s plugin proxy (`ProxyRequest` → `projectMemberParam`
+in `internal/transport/http/handler/plugin_handler.go`): it only populates
+project scope when a `requirePermissions(scope=project)` route's path
+contains that segment. An earlier version of this plugin used bare `/skills`
+paths and silently got an empty `Caller.ProjectID` on every call — caught by
+testing against a real running instance, not by unit tests (which construct
+`Caller` directly and never exercise this resolution step).
+
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/skills` | List the project's skills (name, description, triggers, timestamps). |
-| `POST` | `/skills` | Create a skill. Body: `{ "name", "description", "triggers"?, "body" }`. |
-| `GET` | `/skills/:name` | Fetch one skill, including its rendered `SKILL.md` content. |
-| `PATCH` | `/skills/:name` | Replace a skill's `description`, `triggers`, and `body`. |
-| `DELETE` | `/skills/:name` | Delete a skill. |
+| `GET` | `/projects/:projectId/skills` | List the project's skills (name, description, triggers, timestamps). |
+| `POST` | `/projects/:projectId/skills` | Create a skill. Body: `{ "name", "description", "triggers"?, "body" }`. |
+| `GET` | `/projects/:projectId/skills/:name` | Fetch one skill, including its rendered `SKILL.md` content. |
+| `PATCH` | `/projects/:projectId/skills/:name` | Replace a skill's `description`, `triggers`, and `body`. |
+| `DELETE` | `/projects/:projectId/skills/:name` | Delete a skill. |
 
 `name` is normalized server-side: lowercased, validated as
 lowercase-alphanumeric segments joined by single hyphens, and prefixed with
@@ -76,11 +87,29 @@ is stored and returned as `paca-new-docker-service`). Names starting with
 `paca-trigger-` are rejected — that sub-namespace is reserved for Paca's own
 scaffolding skills.
 
-`GET /skills/:name` and the create/update responses include a `content`
+`GET /projects/:projectId/skills/:name` and the create/update responses include a `content`
 field: a complete, server-rendered `SKILL.md` document (YAML frontmatter +
 markdown body), built from the structured fields rather than accepted as raw
 text from the client — this guarantees every stored skill has valid
 frontmatter.
+
+## Testing
+
+- `go test -race ./...` — 86.5% coverage as of this writing, including every
+  handler's project-scope guard, field validation, and error paths.
+- `golangci-lint run` — clean.
+- Verified against a real `docker compose -f deploy/docker-compose.dev.yml`
+  Paca instance: installed via the manual dev flow (copy `backend.wasm` +
+  `plugin.json` into `plugins/local/backend/com.gorlix.project-skills/`,
+  insert the `plugins` DB row, restart `services/api`), then a full CRUD
+  cycle over real HTTP (create with auto `paca-` prefix, 409 on duplicate,
+  400 on a `paca-trigger-` name, list, get, patch, delete, 404 after delete)
+  against the real Postgres-backed plugin schema
+  (`plugin_data_com_gorlix_project_skills.project_skills`). Also confirmed
+  empirically that a skill created here does not appear in
+  `GET /api/v1/skills`, matching the `skills.baseUrl` boundary explained
+  above. This live pass is what caught the `:projectId` routing bug noted
+  in the API section — unit tests alone did not.
 
 ## Development
 
