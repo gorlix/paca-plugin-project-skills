@@ -1,13 +1,36 @@
 # com.gorlix.project-skills — Project Skills
 
 A Paca plugin that lets a project register its own [Agent Skills](https://agentskills.io/specification)
-(the `SKILL.md` format) and serve them over HTTP, so any project member or
-compliant client tooling can list, create, edit, and delete skills that are
-specific to that project — without touching Paca's core.
+(the `SKILL.md` format), specific to that project, without touching Paca's
+core. A skill's metadata (name, description, triggers) lives in this plugin's
+own table; its instructions are a real Documentation entry, edited in Paca's
+own editor. Skills are reachable three ways: the project sidebar (create/
+open/delete), raw HTTP (`GET`/`POST`/`PATCH`/`DELETE`, for any
+`agentskills.io`-compliant client), and two read-only MCP tools for AI
+clients connected to Paca.
 
 Implements point 3 of [Paca-AI/paca#453](https://github.com/Paca-AI/paca/issues/453)
 ("a Paca project can register its own skills"), as scoped by the maintainer's
 reply on that issue.
+
+## Installing
+
+Not yet in the official `Paca-AI/paca-plugins` catalog — a
+[draft PR](https://github.com/Paca-AI/paca-plugins/pull/31) is open, held in
+draft pending the host-side fix noted under "Frontend" below (without it,
+the sidebar section installs but renders empty on any instance that doesn't
+have that fix). Until then:
+
+- **Manual install** against a dev instance: the "Install the Plugin
+  Locally" step in `Paca-AI/paca`'s
+  [Plugin Developer Guide](https://github.com/Paca-AI/paca/blob/main/docs/plugins/developer-guide.md#step-4--install-the-plugin-locally).
+- **Real marketplace install flow, on your own fork of the catalog**: point
+  your instance's `PLUGINS_MARKETPLACE_CATALOG_URL` at a
+  `raw.githubusercontent.com` URL of a catalog `plugins.json` containing
+  this plugin's entry (see the draft PR above for the exact entry shape),
+  then use the normal `POST /api/v1/admin/plugins/marketplace/install` flow.
+  This is how every release since v0.2.0 has actually been tested — real
+  tarball download, real migration run, real WASM load, not a shortcut.
 
 ## Why this is a separate plugin, and what it deliberately does *not* do
 
@@ -164,18 +187,37 @@ cd backend
 go test ./...
 
 # TinyGo (preferred — see Paca-AI/paca's developer guide for why):
-tinygo build -target=wasip1 -buildmode=c-shared -o ../dist/project-skills.wasm .
+tinygo build -target=wasip1 -buildmode=c-shared -o backend.wasm .
 
 # Standard Go fallback:
-GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o ../dist/project-skills.wasm .
+GOOS=wasip1 GOARCH=wasm go build -buildmode=c-shared -o backend.wasm .
 ```
 
 See `plugin_test.go` for unit tests using the SDK's `plugintest` package —
 no running Paca instance required.
 
+```bash
+cd frontend   # or: cd mcp
+npm install
+npm run typecheck
+npm run build     # → dist/ — remoteEntry.js + assets (frontend) or mcp.js (mcp)
+npm run dev       # build --watch, for local iteration
+```
+
 To install locally against a dev Paca instance, follow the "Install the
 Plugin Locally" step in `Paca-AI/paca`'s
-[Plugin Developer Guide](https://github.com/Paca-AI/paca/blob/main/docs/plugins/developer-guide.md#step-4--install-the-plugin-locally).
+[Plugin Developer Guide](https://github.com/Paca-AI/paca/blob/main/docs/plugins/developer-guide.md#step-4--install-the-plugin-locally) —
+or install from the [marketplace catalog PR](#installing) above, which
+exercises the exact same artifact-download path a real install would.
+
+### Releasing
+
+Push a `v*` tag and `.github/workflows/build-and-release.yml` builds all
+four artifacts (TinyGo WASM, frontend bundle, MCP bundle, migrations) and
+publishes them to a GitHub Release, matching what the marketplace catalog
+entry's `artifacts.*_tar_gz_url` fields point to. No manual tarball-building
+needed — this used to be a hand-run `tar` + `gh release create` sequence for
+the first three tags (v0.2.0, v0.2.1) before this workflow existed.
 
 ## Structure
 
