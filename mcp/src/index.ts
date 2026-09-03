@@ -21,12 +21,19 @@ interface SkillSummary {
   updated_at: string;
 }
 
+interface SkillFile {
+  path: string;
+  content: string;
+  updated_at: string;
+}
+
 interface SkillDetail {
   name: string;
   description: string;
   triggers: string[] | null;
   doc_id: string;
   content: string;
+  files: SkillFile[] | null;
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -57,7 +64,7 @@ const tools: Tool[] = [
   {
     name: "project_skills_get",
     description:
-      "Get the full SKILL.md content (YAML frontmatter + markdown instructions) for one of a project's Agent Skills, by name. Use project_skills_list first to find the skill's name.",
+      "Get the full SKILL.md content (YAML frontmatter + markdown instructions) for one of a project's Agent Skills, by name, plus any reference/script files under it (agentskills.io's references/ and scripts/ folders). Use project_skills_list first to find the skill's name.",
     inputSchema: {
       type: "object",
       properties: {
@@ -108,7 +115,13 @@ const entry: PluginMCPEntry = {
           const skill = await api.pluginGet<SkillDetail>(
             `projects/${projectId}/skills/${encodeURIComponent(skillName)}`,
           );
-          return textResult(skill.content);
+          if (!skill.files?.length) {
+            return textResult(skill.content);
+          }
+          const filesBlock = skill.files
+            .map((f) => `--- ${f.path} ---\n${f.content}`)
+            .join("\n\n");
+          return textResult(`${skill.content}\n\n${filesBlock}`);
         }
 
         default:

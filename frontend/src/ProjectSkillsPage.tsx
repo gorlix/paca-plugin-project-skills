@@ -5,7 +5,7 @@ import {
   usePluginQueryClient,
 } from "@paca-ai/plugin-sdk-react";
 import type { ProjectPageProps } from "@paca-ai/plugin-sdk-react";
-import { PLUGIN_ID, type SkillDetail } from "./constants";
+import { PLUGIN_ID, type SkillDetail, type SkillFile } from "./constants";
 
 export default function ProjectSkillsPage(props: ProjectPageProps) {
   return (
@@ -66,9 +66,21 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
   const [triggersText, setTriggersText] = useState("");
   const [docId, setDocId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [files, setFiles] = useState<SkillFile[]>([]);
+  const [fileFormOpen, setFileFormOpen] = useState(false);
+  const [fileFormEditing, setFileFormEditing] = useState(false);
+  const [fileFormPath, setFileFormPath] = useState("");
+  const [fileFormContent, setFileFormContent] = useState("");
 
   async function invalidateList() {
     await queryClient.invalidateQueries({ queryKey: ["plugin", PLUGIN_ID, "skills", projectId] });
+  }
+
+  function closeFileForm() {
+    setFileFormOpen(false);
+    setFileFormEditing(false);
+    setFileFormPath("");
+    setFileFormContent("");
   }
 
   function startNewDraft() {
@@ -77,6 +89,8 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
     setDescription("");
     setTriggersText("");
     setDocId(null);
+    setFiles([]);
+    closeFileForm();
     setSaveState("idle");
   }
 
@@ -91,6 +105,8 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
       setDescription(detail.description);
       setTriggersText((detail.triggers ?? []).join(", "));
       setDocId(detail.doc_id);
+      setFiles(detail.files ?? []);
+      closeFileForm();
       setSaveState("idle");
     } catch (err) {
       ui.toast({ title: "Failed to open skill", description: String(err), variant: "destructive" });
@@ -240,6 +256,66 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
     }
   }
 
+  function startNewFile() {
+    setFileFormOpen(true);
+    setFileFormEditing(false);
+    setFileFormPath("");
+    setFileFormContent("");
+  }
+
+  function startEditFile(file: SkillFile) {
+    setFileFormOpen(true);
+    setFileFormEditing(true);
+    setFileFormPath(file.path);
+    setFileFormContent(file.content);
+  }
+
+  async function saveFile() {
+    if (selection.kind !== "existing") return;
+    const path = fileFormPath.trim();
+    if (!path) {
+      ui.toast({ title: "path is required", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.pluginPost<SkillFile>(
+        PLUGIN_ID,
+        `/projects/${projectId}/skills/${selection.name}/files`,
+        { path, content: fileFormContent },
+      );
+      ui.toast({ title: `Saved ${path}`, variant: "success" });
+      closeFileForm();
+      const detail = await api.pluginGet<SkillDetail>(
+        PLUGIN_ID,
+        `/projects/${projectId}/skills/${selection.name}`,
+      );
+      setFiles(detail.files ?? []);
+    } catch (err) {
+      ui.toast({ title: "Failed to save file", description: String(err), variant: "destructive" });
+    }
+  }
+
+  async function deleteFile(path: string) {
+    if (selection.kind !== "existing") return;
+    const ok = await ui.confirm({
+      title: `Delete "${path}"?`,
+      description: "This cannot be undone.",
+      variant: "destructive",
+    });
+    if (!ok) return;
+    try {
+      await api.pluginPost(
+        PLUGIN_ID,
+        `/projects/${projectId}/skills/${selection.name}/files/delete`,
+        { path },
+      );
+      ui.toast({ title: "Deleted", variant: "success" });
+      setFiles((prev) => prev.filter((f) => f.path !== path));
+    } catch (err) {
+      ui.toast({ title: "Failed to delete file", description: String(err), variant: "destructive" });
+    }
+  }
+
   const busy = saveState === "saving";
 
   return (
@@ -346,6 +422,90 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
                     Creating this skill opens a new document — write the skill's
                     instructions there, in the same editor as every other project document.
                   </p>
+                )}
+
+                {selection.kind === "existing" && (
+                  <div className="mt-4 grid gap-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-muted-foreground/80">
+                        Files{" "}
+                        <span className="font-normal text-muted-foreground/50">
+                          (references/, scripts/ — plain text/code, not Documentation)
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={startNewFile}
+                        className="text-xs font-medium text-muted-foreground/70 hover:text-foreground"
+                      >
+                        + Add file
+                      </button>
+                    </div>
+
+                    {files.length === 0 && !fileFormOpen && (
+                      <p className="text-xs text-muted-foreground/50">
+                        No reference or script files yet.
+                      </p>
+                    )}
+
+                    {files.map((file) => (
+                      <div
+                        key={file.path}
+                        className="flex items-center justify-between gap-2 rounded-lg border border-border/40 px-2.5 py-1.5"
+                      >
+                        <button
+                          type="button"
+                          onClick={() => startEditFile(file)}
+                          className="min-w-0 truncate text-left text-xs font-mono hover:underline"
+                        >
+                          {file.path}
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete"
+                          onClick={() => void deleteFile(file.path)}
+                          className="shrink-0 text-muted-foreground/50 hover:text-destructive"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+
+                    {fileFormOpen && (
+                      <div className="grid gap-2 rounded-lg border border-border/40 p-2.5">
+                        <input
+                          value={fileFormPath}
+                          disabled={fileFormEditing}
+                          onChange={(e) => setFileFormPath(e.target.value)}
+                          placeholder="references/notes.md or scripts/setup.sh"
+                          className="h-8 w-full min-w-0 rounded-lg border border-input bg-transparent px-2.5 py-1 text-xs font-mono transition-colors outline-none placeholder:text-muted-foreground placeholder:font-sans focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed disabled:bg-input/50 disabled:opacity-50 dark:bg-input/30 dark:disabled:bg-input/80 text-foreground"
+                        />
+                        <textarea
+                          value={fileFormContent}
+                          onChange={(e) => setFileFormContent(e.target.value)}
+                          rows={8}
+                          spellCheck={false}
+                          className="w-full min-w-0 resize-y rounded-lg border border-input bg-transparent px-2.5 py-2 text-xs font-mono leading-relaxed transition-colors outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 text-foreground"
+                        />
+                        <div className="flex justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={closeFileForm}
+                            className="group/button inline-flex items-center justify-center rounded-lg border border-transparent text-sm font-medium transition-all outline-none select-none hover:bg-muted hover:text-foreground h-7 px-2.5 text-xs"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void saveFile()}
+                            className="group/button inline-flex items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium transition-all outline-none select-none bg-primary text-primary-foreground hover:bg-primary/85 h-7 px-2.5 text-xs"
+                          >
+                            Save file
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             )}

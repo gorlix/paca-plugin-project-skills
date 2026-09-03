@@ -83,6 +83,8 @@ func (p *projectSkillsPlugin) Init(ctx *plugin.Context) error {
 	ctx.Route("GET", "/projects/:projectId/skills/:name", p.getSkill)
 	ctx.Route("PATCH", "/projects/:projectId/skills/:name", p.updateSkill)
 	ctx.Route("DELETE", "/projects/:projectId/skills/:name", p.deleteSkill)
+	ctx.Route("POST", "/projects/:projectId/skills/:name/files", p.upsertSkillFile)
+	ctx.Route("POST", "/projects/:projectId/skills/:name/files/delete", p.deleteSkillFile)
 	ctx.Route("GET", "/projects/:projectId/skills-folder", p.getSkillsFolder)
 	ctx.Route("POST", "/projects/:projectId/skills-folder", p.setSkillsFolder)
 
@@ -109,11 +111,71 @@ type skillSummary struct {
 }
 
 type skillDetail struct {
-	Name        string   `json:"name"`
-	Description string   `json:"description"`
-	Triggers    []string `json:"triggers"`
-	DocID       string   `json:"doc_id"`
-	Content     string   `json:"content"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Triggers    []string    `json:"triggers"`
+	DocID       string      `json:"doc_id"`
+	Content     string      `json:"content"`
+	Files       []skillFile `json:"files"`
+}
+
+// skillFile is one entry under a skill's references/ or scripts/ folder
+// (agentskills.io's multi-file layout). Unlike the SKILL.md body — a real
+// Document, per the type above this plugin never renders an editor for —
+// these are plain text/code with no Documentation equivalent, so this
+// plugin owns their storage directly (project_skill_files, migration
+// 0002). Deliberately text-only: the backend has no storage/blob or
+// outbound HTTP access (see plugin-sdk-go's Context — only DB and KV), so
+// true binary assets (agentskills.io's assets/) aren't supported and
+// aren't planned to be from this backend.
+type skillFile struct {
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// skillFilePathPattern restricts a file to exactly one segment under
+// references/ or scripts/ — rejects path traversal (".."), absolute paths,
+// deeper nesting, and any other top-level folder (in particular assets/,
+// since binary content isn't supported — see skillFile's doc comment).
+var skillFilePathPattern = regexp.MustCompile(`^(references|scripts)/[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// skillFilesColumns/colFileX mirror skillColumns/colX above for the same
+// reason (see that constant's comment): plugintest's InMemoryDB mock always
+// returns a matched row in the table's physical column order, so every
+// SELECT here names the full column list and indexes results positionally.
+const skillFilesColumns = "id, skill_id, path, content, created_at, updated_at"
+
+const (
+	colFileID = iota
+	colFileSkillID
+	colFilePath
+	colFileContent
+	colFileCreatedAt
+	colFileUpdatedAt
+)
+
+// loadSkillFiles fetches every references/scripts/ file for a skill, so
+// getSkill/createSkill/updateSkill can embed them in skillDetail — a
+// client fetching one skill (over HTTP, or via the MCP project_skills_get
+// tool) gets the complete multi-file bundle in a single call.
+func (p *projectSkillsPlugin) loadSkillFiles(skillID string) ([]skillFile, error) {
+	rows, err := p.db.Query(
+		"SELECT "+skillFilesColumns+" FROM project_skill_files WHERE skill_id = $1 ORDER BY path",
+		skillID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	files := make([]skillFile, 0, len(rows.Rows))
+	for _, row := range rows.Rows {
+		files = append(files, skillFile{
+			Path:      toString(row, colFilePath),
+			Content:   toString(row, colFileContent),
+			UpdatedAt: toString(row, colFileUpdatedAt),
+		})
+	}
+	return files, nil
 }
 
 func (p *projectSkillsPlugin) listSkills(req *plugin.Request, res *plugin.Response) {
@@ -218,13 +280,14 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 		return
 	}
 
+	skillID := uuid.NewString()
 	triggersJSON, _ := json.Marshal(payload.Triggers)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 
 	_, err = p.db.Exec(
 		`INSERT INTO project_skills (id, project_id, name, description, triggers, created_by, created_at, updated_at, doc_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		uuid.NewString(), projectID, name, description, string(triggersJSON),
+		skillID, projectID, name, description, string(triggersJSON),
 		req.Caller.CallerID, now, now, docID,
 	)
 	if err != nil {
@@ -243,6 +306,7 @@ func (p *projectSkillsPlugin) createSkill(req *plugin.Request, res *plugin.Respo
 		Triggers:    payload.Triggers,
 		DocID:       docID,
 		Content:     content,
+		Files:       []skillFile{},
 	}})
 }
 
@@ -307,12 +371,17 @@ func (p *projectSkillsPlugin) getSkill(req *plugin.Request, res *plugin.Response
 	if err != nil {
 		p.log.Error("getSkill content render failed: " + err.Error())
 	}
+	files, err := p.loadSkillFiles(toString(row, colID))
+	if err != nil {
+		p.log.Error("getSkill files lookup failed: " + err.Error())
+	}
 	res.JSON(200, successEnvelope{Success: true, Data: skillDetail{
 		Name:        toString(row, colName),
 		Description: toString(row, colDescription),
 		Triggers:    triggers,
 		DocID:       docID,
 		Content:     content,
+		Files:       files,
 	}})
 }
 
@@ -360,6 +429,7 @@ func (p *projectSkillsPlugin) updateSkill(req *plugin.Request, res *plugin.Respo
 		return
 	}
 	docID := toString(rows.Rows[0], colDocID)
+	skillID := toString(rows.Rows[0], colID)
 
 	rowsUpdated, err := p.db.Exec(
 		`UPDATE project_skills SET description = $1, triggers = $2, updated_at = $3
@@ -380,12 +450,17 @@ func (p *projectSkillsPlugin) updateSkill(req *plugin.Request, res *plugin.Respo
 	if err != nil {
 		p.log.Error("updateSkill content render failed: " + err.Error())
 	}
+	files, err := p.loadSkillFiles(skillID)
+	if err != nil {
+		p.log.Error("updateSkill files lookup failed: " + err.Error())
+	}
 	res.JSON(200, successEnvelope{Success: true, Data: skillDetail{
 		Name:        name,
 		Description: description,
 		Triggers:    payload.Triggers,
 		DocID:       docID,
 		Content:     content,
+		Files:       files,
 	}})
 }
 
@@ -413,6 +488,148 @@ func (p *projectSkillsPlugin) deleteSkill(req *plugin.Request, res *plugin.Respo
 	}
 	if rowsDeleted == 0 {
 		res.Error(404, "skill not found")
+		return
+	}
+
+	res.NoContent()
+}
+
+// upsertSkillFile creates or replaces one references/ or scripts/ file for
+// a skill. POST rather than PUT/PATCH: the frontend's PluginApiClient has
+// no PUT, and an upsert isn't a natural fit for PATCH's "partial update"
+// semantics anyway.
+func (p *projectSkillsPlugin) upsertSkillFile(req *plugin.Request, res *plugin.Response) {
+	projectID := req.Caller.ProjectID
+	name := req.PathParam("name")
+	if projectID == "" {
+		res.Error(400, "missing project scope")
+		return
+	}
+
+	type upsertBody struct {
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	payload, err := plugin.JSONBody[upsertBody](req)
+	if err != nil {
+		res.Error(400, "invalid JSON body")
+		return
+	}
+	if !skillFilePathPattern.MatchString(payload.Path) {
+		res.Error(400, "path must look like 'references/<name>' or 'scripts/<name>' (letters, digits, dots, dashes, underscores only)")
+		return
+	}
+
+	skillRows, err := p.db.Query(
+		"SELECT "+skillColumns+" FROM project_skills WHERE project_id = $1 AND name = $2",
+		projectID, name,
+	)
+	if err != nil {
+		p.log.Error("upsertSkillFile skill lookup failed: " + err.Error())
+		res.Error(500, "failed to save file")
+		return
+	}
+	if len(skillRows.Rows) == 0 {
+		res.Error(404, "skill not found")
+		return
+	}
+	skillID := toString(skillRows.Rows[0], colID)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+
+	// Explicit check-then-insert/update rather than a single "ON CONFLICT
+	// DO UPDATE" statement — plugintest's InMemoryDB mock only implements
+	// plain INSERT/UPDATE/DELETE (see its own doc comment), so this stays
+	// testable against the mock the same way createSkill's own
+	// existence-check-then-insert already does.
+	existing, err := p.db.Query(
+		"SELECT 1 FROM project_skill_files WHERE skill_id = $1 AND path = $2",
+		skillID, payload.Path,
+	)
+	if err != nil {
+		p.log.Error("upsertSkillFile existence check failed: " + err.Error())
+		res.Error(500, "failed to save file")
+		return
+	}
+	if len(existing.Rows) > 0 {
+		_, err = p.db.Exec(
+			`UPDATE project_skill_files SET content = $1, updated_at = $2
+			 WHERE skill_id = $3 AND path = $4`,
+			payload.Content, now, skillID, payload.Path,
+		)
+	} else {
+		_, err = p.db.Exec(
+			`INSERT INTO project_skill_files (id, skill_id, path, content, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			uuid.NewString(), skillID, payload.Path, payload.Content, now, now,
+		)
+	}
+	if err != nil {
+		p.log.Error("upsertSkillFile save failed: " + err.Error())
+		res.Error(500, "failed to save file")
+		return
+	}
+
+	res.JSON(200, successEnvelope{Success: true, Data: skillFile{
+		Path:      payload.Path,
+		Content:   payload.Content,
+		UpdatedAt: now,
+	}})
+}
+
+// deleteSkillFile removes one file by path. POST, not DELETE: the
+// frontend's PluginApiClient.pluginDelete sends no body, and the path
+// (which can contain "/") can't safely become a single URL path segment —
+// this plugin's own route matcher requires an exact segment count with no
+// wildcard support (confirmed in plugin-sdk-go's matchRoutePattern; the
+// manifest schema's "/items/*rest" example describes syntax the host
+// accepts for registration, not something this router can actually match).
+func (p *projectSkillsPlugin) deleteSkillFile(req *plugin.Request, res *plugin.Response) {
+	projectID := req.Caller.ProjectID
+	name := req.PathParam("name")
+	if projectID == "" {
+		res.Error(400, "missing project scope")
+		return
+	}
+
+	type deleteBody struct {
+		Path string `json:"path"`
+	}
+	payload, err := plugin.JSONBody[deleteBody](req)
+	if err != nil {
+		res.Error(400, "invalid JSON body")
+		return
+	}
+	if strings.TrimSpace(payload.Path) == "" {
+		res.Error(400, "path is required")
+		return
+	}
+
+	skillRows, err := p.db.Query(
+		"SELECT "+skillColumns+" FROM project_skills WHERE project_id = $1 AND name = $2",
+		projectID, name,
+	)
+	if err != nil {
+		p.log.Error("deleteSkillFile skill lookup failed: " + err.Error())
+		res.Error(500, "failed to delete file")
+		return
+	}
+	if len(skillRows.Rows) == 0 {
+		res.Error(404, "skill not found")
+		return
+	}
+	skillID := toString(skillRows.Rows[0], colID)
+
+	rowsDeleted, err := p.db.Exec(
+		"DELETE FROM project_skill_files WHERE skill_id = $1 AND path = $2",
+		skillID, payload.Path,
+	)
+	if err != nil {
+		p.log.Error("deleteSkillFile failed: " + err.Error())
+		res.Error(500, "failed to delete file")
+		return
+	}
+	if rowsDeleted == 0 {
+		res.Error(404, "file not found")
 		return
 	}
 

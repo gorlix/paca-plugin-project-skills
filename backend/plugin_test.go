@@ -34,6 +34,11 @@ func setupPlugin(t *testing.T) *plugintest.Context {
 			{testDocID, testProjectID, testDocContent, nil},
 		},
 	)
+	tc.DB.SeedRows(
+		"project_skill_files",
+		[]string{"id", "skill_id", "path", "content", "created_at", "updated_at"},
+		nil,
+	)
 
 	var p projectSkillsPlugin
 	if err := p.Init(tc.PluginContext()); err != nil {
@@ -390,6 +395,154 @@ func TestSkillsFolderValidation(t *testing.T) {
 	})
 	if invalidJSON.StatusCode != 400 {
 		t.Errorf("PUT invalid JSON: expected 400, got %d", invalidJSON.StatusCode)
+	}
+}
+
+func createTestSkill(t *testing.T, tc *plugintest.Context, name string) {
+	t.Helper()
+	res := tc.Call("POST", "/projects/:projectId/skills", req().WithJSONBody(map[string]any{
+		"name":        name,
+		"description": "d",
+		"doc_id":      testDocID,
+	}))
+	if res.StatusCode != 201 {
+		t.Fatalf("createTestSkill(%q): expected 201, got %d: %s", name, res.StatusCode, res.BodyString())
+	}
+}
+
+func TestSkillFileUpsertCreateAndUpdate(t *testing.T) {
+	tc := setupPlugin(t)
+	createTestSkill(t, tc, "with-files")
+
+	create := tc.Call("POST", "/projects/:projectId/skills/:name/files", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-with-files"},
+	}.WithJSONBody(map[string]any{
+		"path":    "references/notes.md",
+		"content": "first version",
+	}))
+	if create.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", create.StatusCode, create.BodyString())
+	}
+
+	get := tc.Call("GET", "/projects/:projectId/skills/:name", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-with-files"},
+	})
+	var getEnv struct {
+		Data skillDetail `json:"data"`
+	}
+	_ = json.Unmarshal(get.Body, &getEnv)
+	if len(getEnv.Data.Files) != 1 || getEnv.Data.Files[0].Content != "first version" {
+		t.Fatalf("expected one file with content %q, got %+v", "first version", getEnv.Data.Files)
+	}
+
+	update := tc.Call("POST", "/projects/:projectId/skills/:name/files", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-with-files"},
+	}.WithJSONBody(map[string]any{
+		"path":    "references/notes.md",
+		"content": "second version",
+	}))
+	if update.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", update.StatusCode, update.BodyString())
+	}
+
+	getAfterUpdate := tc.Call("GET", "/projects/:projectId/skills/:name", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-with-files"},
+	})
+	var getAfterEnv struct {
+		Data skillDetail `json:"data"`
+	}
+	_ = json.Unmarshal(getAfterUpdate.Body, &getAfterEnv)
+	if len(getAfterEnv.Data.Files) != 1 || getAfterEnv.Data.Files[0].Content != "second version" {
+		t.Fatalf("expected the same path updated in place with content %q, got %+v", "second version", getAfterEnv.Data.Files)
+	}
+}
+
+func TestSkillFileUpsertRejectsInvalidPaths(t *testing.T) {
+	tc := setupPlugin(t)
+	createTestSkill(t, tc, "bad-paths")
+
+	cases := []struct {
+		name string
+		path string
+	}{
+		{"path traversal", "references/../../etc/passwd"},
+		{"absolute path", "/references/notes.md"},
+		{"wrong top-level dir", "assets/image.png"},
+		{"no top-level dir", "notes.md"},
+		{"nested subdirectory", "references/sub/notes.md"},
+		{"empty path", ""},
+	}
+	for _, c := range cases {
+		res := tc.Call("POST", "/projects/:projectId/skills/:name/files", plugintest.Request{
+			Caller:     req().Caller,
+			PathParams: map[string]string{"name": "paca-bad-paths"},
+		}.WithJSONBody(map[string]any{
+			"path":    c.path,
+			"content": "x",
+		}))
+		if res.StatusCode != 400 {
+			t.Errorf("%s (%q): expected 400, got %d: %s", c.name, c.path, res.StatusCode, res.BodyString())
+		}
+	}
+}
+
+func TestSkillFileUpsertMissingSkillReturns404(t *testing.T) {
+	tc := setupPlugin(t)
+
+	res := tc.Call("POST", "/projects/:projectId/skills/:name/files", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-does-not-exist"},
+	}.WithJSONBody(map[string]any{
+		"path":    "scripts/setup.sh",
+		"content": "#!/bin/sh",
+	}))
+	if res.StatusCode != 404 {
+		t.Fatalf("expected 404, got %d: %s", res.StatusCode, res.BodyString())
+	}
+}
+
+func TestSkillFileDelete(t *testing.T) {
+	tc := setupPlugin(t)
+	createTestSkill(t, tc, "delete-me")
+
+	_ = tc.Call("POST", "/projects/:projectId/skills/:name/files", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-delete-me"},
+	}.WithJSONBody(map[string]any{
+		"path":    "scripts/setup.sh",
+		"content": "#!/bin/sh\necho hi",
+	}))
+
+	del := tc.Call("POST", "/projects/:projectId/skills/:name/files/delete", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-delete-me"},
+	}.WithJSONBody(map[string]any{"path": "scripts/setup.sh"}))
+	if del.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", del.StatusCode, del.BodyString())
+	}
+
+	get := tc.Call("GET", "/projects/:projectId/skills/:name", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-delete-me"},
+	})
+	var getEnv struct {
+		Data skillDetail `json:"data"`
+	}
+	_ = json.Unmarshal(get.Body, &getEnv)
+	if len(getEnv.Data.Files) != 0 {
+		t.Fatalf("expected no files after delete, got %+v", getEnv.Data.Files)
+	}
+
+	deleteAgain := tc.Call("POST", "/projects/:projectId/skills/:name/files/delete", plugintest.Request{
+		Caller:     req().Caller,
+		PathParams: map[string]string{"name": "paca-delete-me"},
+	}.WithJSONBody(map[string]any{"path": "scripts/setup.sh"}))
+	if deleteAgain.StatusCode != 404 {
+		t.Fatalf("expected 404 deleting an already-deleted file, got %d: %s", deleteAgain.StatusCode, deleteAgain.BodyString())
 	}
 }
 

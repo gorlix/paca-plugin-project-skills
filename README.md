@@ -99,7 +99,7 @@ testing against a real running instance, not by unit tests (which construct
 |---|---|---|
 | `GET` | `/projects/:projectId/skills` | List the project's skills (name, description, triggers, `doc_id`, timestamps). |
 | `POST` | `/projects/:projectId/skills` | Create a skill. Body: `{ "name", "description", "triggers"?, "doc_id" }`. |
-| `GET` | `/projects/:projectId/skills/:name` | Fetch one skill, including its rendered `SKILL.md` content. |
+| `GET` | `/projects/:projectId/skills/:name` | Fetch one skill: rendered `SKILL.md` content plus any `references/`/`scripts/` files (see below). |
 | `PATCH` | `/projects/:projectId/skills/:name` | Update a skill's `description` and `triggers` (`doc_id` is immutable once set). |
 | `DELETE` | `/projects/:projectId/skills/:name` | Delete a skill (leaves its linked Document untouched — see below). |
 
@@ -243,17 +243,41 @@ paca-plugin-project-skills/
     src/index.ts          ← project_skills_list / project_skills_get
 ```
 
+## Multi-file skills (references/, scripts/)
+
+A skill can have `references/*` and `scripts/*` files alongside its
+SKILL.md, stored in `project_skill_files` (migration 0002) — plain text
+only (markdown, shell, code), edited via a small textarea in the frontend's
+Files section, not Documentation: these aren't prose, and BlockNote isn't
+the right tool for a shell script. `GET .../skills/:name` and the MCP
+`project_skills_get` tool both return them inline alongside the SKILL.md
+content, so a client gets the whole bundle in one call.
+
+`assets/` (real binaries — images, PDFs) is deliberately **not**
+supported: the plugin backend has no storage/blob access or outbound HTTP
+(only DB + KV, see `plugin-sdk-go`'s `Context`), so it can never read the
+bytes of a real file attachment even if one were uploaded through
+Documentation's own attachment mechanism (those live in MinIO, reachable
+only by an authenticated browser via a presigned URL). Text-only files
+sidestep this entirely — no storage access needed, `project_skill_files` is
+just another plugin-owned table.
+
+Two routes, both POST (the frontend SDK's `PluginApiClient` has no PUT, and
+no body-carrying DELETE — see the comments on `upsertSkillFile`/
+`deleteSkillFile` in `backend/plugin.go` for why, including why a
+`/files/*path`-style wildcard route isn't an option either):
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/projects/:projectId/skills/:name/files` | Upsert `{path, content}`. `path` must match `(references\|scripts)/<name>` — one segment, no nesting, no `..`. |
+| `POST` | `/projects/:projectId/skills/:name/files/delete` | Delete `{path}`. |
+
+Deleting the skill cascades to its files (`ON DELETE CASCADE` on
+`skill_id`) — verified against real Postgres, not just the unit test mock
+(which doesn't enforce foreign keys).
+
 ## Future work
 
-- **Multi-file skills** (`references/`, `scripts/`, `assets/` per the
-  agentskills.io spec): `project_skill_files` (migration 0002) exists but has
-  no handler yet. Reference docs map cleanly onto more Documents in the
-  skill's own doc subfolder; raw files (scripts, binaries) don't fit
-  Documentation's BlockNote model at all — doc file attachments
-  (`docfile://` URIs) are the plausible path, but the plugin backend has no
-  storage/blob or outbound HTTP access (only DB + KV), so any such bundling
-  would have to happen client-side, not in `backend/plugin.go`. Not
-  designed yet.
 - **Client-side download integration**: `scripts/install-paca-skills.sh`
   in `Paca-AI/paca` only ever fetches Paca's bundled skills and
   `skills.baseUrl`-wired plugin skills (`GET /api/v1/skills`) — it has no
