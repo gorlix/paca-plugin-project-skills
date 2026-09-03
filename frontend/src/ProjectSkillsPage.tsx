@@ -113,36 +113,54 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
     ui.navigate(`/projects/${projectId}/docs/${docId}`);
   }
 
-  /** Finds this project's root-level "Skills" doc folder, creating it once
-   * if missing. Every skill's linked document is filed under it — otherwise
-   * it shows up as a bare, unlabeled entry in the Documentation list
-   * indistinguishable from an ordinary doc. */
+  /** Returns the doc folder every skill's linked document should be filed
+   * under, creating it once if this project has never needed one — recorded
+   * in this plugin's own KV store (via /skills-folder) rather than found by
+   * matching a folder's *name*. An earlier version searched for a
+   * root-level folder literally named "Skills": the Documentation folder
+   * API enforces no name uniqueness at all (confirmed by creating two
+   * sibling "Skills" folders in the same project without error), so that
+   * approach would silently adopt any unrelated folder a project happened
+   * to already have with that exact name. */
   async function ensureSkillsFolder(): Promise<string> {
-    const listRes = await fetch(`/api/v1/projects/${projectId}/docs/folders`, {
-      credentials: "include",
-    });
-    if (!listRes.ok) {
-      throw new Error(`Failed to list doc folders (${listRes.status})`);
-    }
-    const listEnvelope = (await listRes.json()) as {
-      data: { items: { id: string; name: string; parent_id: string | null }[] };
-    };
-    const existing = listEnvelope.data.items.find(
-      (f) => f.name === "Skills" && !f.parent_id,
+    const stored = await api.pluginGet<{ doc_folder_id: string }>(
+      PLUGIN_ID,
+      `/projects/${projectId}/skills-folder`,
     );
-    if (existing) return existing.id;
+    if (stored.doc_folder_id) {
+      const listRes = await fetch(`/api/v1/projects/${projectId}/docs/folders`, {
+        credentials: "include",
+      });
+      if (listRes.ok) {
+        const listEnvelope = (await listRes.json()) as {
+          data: { items: { id: string }[] };
+        };
+        const stillExists = listEnvelope.data.items.some(
+          (f) => f.id === stored.doc_folder_id,
+        );
+        if (stillExists) return stored.doc_folder_id;
+      }
+      // Recorded folder no longer exists (deleted on the Documentation
+      // side, outside this plugin's knowledge) — fall through and create
+      // a fresh one below.
+    }
 
     const createRes = await fetch(`/api/v1/projects/${projectId}/docs/folders`, {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "Skills" }),
+      body: JSON.stringify({ name: "Project Skills" }),
     });
     if (!createRes.ok) {
-      throw new Error(`Failed to create Skills folder (${createRes.status})`);
+      throw new Error(`Failed to create Project Skills folder (${createRes.status})`);
     }
     const createEnvelope = (await createRes.json()) as { data: { id: string } };
-    return createEnvelope.data.id;
+    const newFolderId = createEnvelope.data.id;
+
+    await api.pluginPost(PLUGIN_ID, `/projects/${projectId}/skills-folder`, {
+      doc_folder_id: newFolderId,
+    });
+    return newFolderId;
   }
 
   async function createSkill() {

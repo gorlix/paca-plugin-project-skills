@@ -61,11 +61,13 @@ const (
 
 type projectSkillsPlugin struct {
 	db  *plugin.DB
+	kv  *plugin.KV
 	log *plugin.Logger
 }
 
 func (p *projectSkillsPlugin) Init(ctx *plugin.Context) error {
 	p.db = ctx.DB()
+	p.kv = ctx.KV()
 	p.log = ctx.Log()
 
 	// Routes embed :projectId (rather than just /skills) because the host's
@@ -81,6 +83,8 @@ func (p *projectSkillsPlugin) Init(ctx *plugin.Context) error {
 	ctx.Route("GET", "/projects/:projectId/skills/:name", p.getSkill)
 	ctx.Route("PATCH", "/projects/:projectId/skills/:name", p.updateSkill)
 	ctx.Route("DELETE", "/projects/:projectId/skills/:name", p.deleteSkill)
+	ctx.Route("GET", "/projects/:projectId/skills-folder", p.getSkillsFolder)
+	ctx.Route("POST", "/projects/:projectId/skills-folder", p.setSkillsFolder)
 
 	p.log.Info("com.gorlix.project-skills initialized")
 	return nil
@@ -412,6 +416,64 @@ func (p *projectSkillsPlugin) deleteSkill(req *plugin.Request, res *plugin.Respo
 		return
 	}
 
+	res.NoContent()
+}
+
+// skillsFolderKVKey namespaces the KV entry per project — this plugin's KV
+// store is shared across every route, not scoped by path param the way the
+// DB schema is scoped by project_id column.
+func skillsFolderKVKey(projectID string) string {
+	return "skills-folder:" + projectID
+}
+
+// getSkillsFolder returns the doc_folder_id this project's "new skill"
+// button should file documents under, if one has been recorded. Frontend
+// still confirms the folder still exists (not deleted) before trusting
+// this — the plugin has no way to be notified of a Document folder
+// deletion happening entirely on the host's side.
+//
+// This exists so the frontend never has to *discover* the right folder by
+// matching on its name: an earlier version did that (find-or-create a
+// root-level folder literally named "Skills"), which silently adopted any
+// unrelated folder a project happened to already have with that exact
+// name — the Documentation folder API enforces no name uniqueness at all,
+// confirmed by creating two sibling folders named "Skills" in the same
+// project without error. Persisting the real ID here, once, at creation
+// time makes reuse deterministic instead of name-based guessing.
+func (p *projectSkillsPlugin) getSkillsFolder(req *plugin.Request, res *plugin.Response) {
+	projectID := req.Caller.ProjectID
+	if projectID == "" {
+		res.Error(400, "missing project scope")
+		return
+	}
+	folderID, _ := p.kv.Get(skillsFolderKVKey(projectID))
+	res.JSON(200, successEnvelope{Success: true, Data: map[string]string{"doc_folder_id": folderID}})
+}
+
+// setSkillsFolder records the doc_folder_id for this project, called once
+// by the frontend right after it creates that folder for the first time.
+func (p *projectSkillsPlugin) setSkillsFolder(req *plugin.Request, res *plugin.Response) {
+	projectID := req.Caller.ProjectID
+	if projectID == "" {
+		res.Error(400, "missing project scope")
+		return
+	}
+
+	type setBody struct {
+		DocFolderID string `json:"doc_folder_id"`
+	}
+	payload, err := plugin.JSONBody[setBody](req)
+	if err != nil {
+		res.Error(400, "invalid JSON body")
+		return
+	}
+	docFolderID := strings.TrimSpace(payload.DocFolderID)
+	if docFolderID == "" {
+		res.Error(400, "doc_folder_id is required")
+		return
+	}
+
+	p.kv.Set(skillsFolderKVKey(projectID), docFolderID)
 	res.NoContent()
 }
 

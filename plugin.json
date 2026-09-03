@@ -2,7 +2,7 @@
   "id": "com.gorlix.project-skills",
   "displayName": "Project Skills",
   "description": "Let a project register its own Agent Skills (agentskills.io format) and serve them over HTTP to any compliant client.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "minCoreVersion": "0.13.3",
   "permissions": ["db.read", "db.write"],
   "backend": {
@@ -62,6 +62,32 @@
       {
         "method": "DELETE",
         "path": "/projects/:projectId/skills/:name",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.write"]
+          }
+        ]
+      },
+      {
+        "method": "GET",
+        "path": "/projects/:projectId/skills-folder",
+        "middlewares": [
+          { "name": "optionalAuthn" },
+          { "name": "requireFreshPassword" },
+          {
+            "name": "requirePermissions",
+            "scope": "project",
+            "permissions": ["projects.read"]
+          }
+        ]
+      },
+      {
+        "method": "POST",
+        "path": "/projects/:projectId/skills-folder",
         "middlewares": [
           { "name": "optionalAuthn" },
           { "name": "requireFreshPassword" },

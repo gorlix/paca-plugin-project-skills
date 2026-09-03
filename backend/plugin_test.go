@@ -331,6 +331,68 @@ func TestUpdateInvalidJSONBodyReturns400(t *testing.T) {
 	}
 }
 
+func TestSkillsFolderRoundTrip(t *testing.T) {
+	tc := setupPlugin(t)
+
+	empty := tc.Call("GET", "/projects/:projectId/skills-folder", req())
+	if empty.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d: %s", empty.StatusCode, empty.BodyString())
+	}
+	var emptyEnv struct {
+		Data struct {
+			DocFolderID string `json:"doc_folder_id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(empty.Body, &emptyEnv)
+	if emptyEnv.Data.DocFolderID != "" {
+		t.Fatalf("expected empty doc_folder_id before it's ever set, got %q", emptyEnv.Data.DocFolderID)
+	}
+
+	set := tc.Call("POST", "/projects/:projectId/skills-folder", req().WithJSONBody(map[string]any{
+		"doc_folder_id": "folder-1",
+	}))
+	if set.StatusCode != 204 {
+		t.Fatalf("expected 204, got %d: %s", set.StatusCode, set.BodyString())
+	}
+
+	get := tc.Call("GET", "/projects/:projectId/skills-folder", req())
+	var getEnv struct {
+		Data struct {
+			DocFolderID string `json:"doc_folder_id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(get.Body, &getEnv)
+	if getEnv.Data.DocFolderID != "folder-1" {
+		t.Fatalf("expected doc_folder_id %q, got %q", "folder-1", getEnv.Data.DocFolderID)
+	}
+}
+
+func TestSkillsFolderValidation(t *testing.T) {
+	tc := setupPlugin(t)
+
+	missingScope := tc.Call("GET", "/projects/:projectId/skills-folder", plugintest.Request{
+		Caller: plugin.CallerIdentity{CallerID: "member-1"},
+	})
+	if missingScope.StatusCode != 400 {
+		t.Errorf("GET missing scope: expected 400, got %d", missingScope.StatusCode)
+	}
+
+	blank := tc.Call("POST", "/projects/:projectId/skills-folder", req().WithJSONBody(map[string]any{
+		"doc_folder_id": "  ",
+	}))
+	if blank.StatusCode != 400 {
+		t.Errorf("PUT blank doc_folder_id: expected 400, got %d", blank.StatusCode)
+	}
+
+	invalidJSON := tc.Call("POST", "/projects/:projectId/skills-folder", plugintest.Request{
+		Caller: req().Caller,
+		Body:   []byte("{not json"),
+	})
+	if invalidJSON.StatusCode != 400 {
+		t.Errorf("PUT invalid JSON: expected 400, got %d", invalidJSON.StatusCode)
+	}
+}
+
 func TestShutdownDoesNotPanic(t *testing.T) {
 	tc := plugintest.NewContext(t)
 	tc.DB.SeedRows(
