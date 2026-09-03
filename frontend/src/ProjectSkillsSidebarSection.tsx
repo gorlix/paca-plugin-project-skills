@@ -1,9 +1,13 @@
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties } from "react";
-import { PluginQueryClientProvider, usePluginQuery, usePluginQueryClient } from "@paca-ai/plugin-sdk-react";
+import type { CSSProperties, Ref } from "react";
+import {
+  PluginQueryClientProvider,
+  usePluginQuery,
+  usePluginQueryClient,
+} from "@paca-ai/plugin-sdk-react";
 import type { SidebarProjectSectionProps } from "@paca-ai/plugin-sdk-react";
 import { ChevronRight, FileText, Folder, MoreHorizontal, Plus, Sparkles } from "lucide-react";
-import { PLUGIN_ID, type SkillSummary } from "./constants";
+import { PLUGIN_ID, type SkillDetail, type SkillSummary } from "./constants";
 
 const PAGE_PATH_SUFFIX = "plugins/com.gorlix.project-skills/skills";
 
@@ -106,55 +110,106 @@ function Content({ api, ui, projectId, isCollapsed }: SidebarProjectSectionProps
           {skills.isLoading && <div style={emptyStyle}>Loading…</div>}
           {skills.data?.length === 0 && <div style={emptyStyle}>No skills yet</div>}
 
-          {skills.data?.map((skill) => {
-            const isOpen = expanded.has(skill.name);
-            return (
-              <div key={skill.name}>
-                <div style={rowStyle}>
-                  <button type="button" style={rowButtonStyle} onClick={() => toggleExpanded(skill.name)}>
-                    <ChevronRight size={12} style={{ ...chevronStyle(isOpen), flexShrink: 0 }} />
-                    <Folder size={14} style={{ opacity: 0.6, flexShrink: 0 }} />
-                    <span style={truncateStyle}>{skill.name}</span>
-                  </button>
-                  <div style={{ position: "relative" }} ref={menuOpenFor === skill.name ? menuRef : undefined}>
-                    <button
-                      type="button"
-                      style={menuButtonStyle}
-                      onClick={() => setMenuOpenFor((cur) => (cur === skill.name ? null : skill.name))}
-                    >
-                      <MoreHorizontal size={13} />
-                    </button>
-                    {menuOpenFor === skill.name && (
-                      <div style={menuPopoverStyle}>
-                        <button
-                          type="button"
-                          style={menuItemStyle}
-                          onClick={() => {
-                            setMenuOpenFor(null);
-                            void remove(skill.name);
-                          }}
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                {isOpen && (
-                  <button type="button" style={fileRowStyle} onClick={() => openSkill(skill.name)}>
-                    <FileText size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
-                    <span style={truncateStyle}>SKILL.md</span>
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          {skills.data?.map((skill) => (
+            <SkillRow
+              key={skill.name}
+              skill={skill}
+              isOpen={expanded.has(skill.name)}
+              onToggle={() => toggleExpanded(skill.name)}
+              onOpen={() => openSkill(skill.name)}
+              onDelete={() => void remove(skill.name)}
+              menuOpen={menuOpenFor === skill.name}
+              onMenuToggle={() => setMenuOpenFor((cur) => (cur === skill.name ? null : skill.name))}
+              menuRef={menuOpenFor === skill.name ? menuRef : undefined}
+              api={api}
+              projectId={projectId}
+            />
+          ))}
 
           <button type="button" style={addRowStyle} onClick={newSkill}>
             <Plus size={12} style={{ flexShrink: 0 }} />
             <span>Add</span>
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function SkillRow({
+  skill,
+  isOpen,
+  onToggle,
+  onOpen,
+  onDelete,
+  menuOpen,
+  onMenuToggle,
+  menuRef,
+  api,
+  projectId,
+}: {
+  skill: SkillSummary;
+  isOpen: boolean;
+  onToggle: () => void;
+  onOpen: () => void;
+  onDelete: () => void;
+  menuOpen: boolean;
+  onMenuToggle: () => void;
+  menuRef: Ref<HTMLDivElement> | undefined;
+  api: SidebarProjectSectionProps["api"];
+  projectId: string;
+}) {
+  // Fetched lazily — only once the row is actually expanded — since most
+  // skills in a project are never opened in a given session.
+  const detail = usePluginQuery(
+    PLUGIN_ID,
+    ["skill-detail-files", projectId, skill.name],
+    () => api.pluginGet<SkillDetail>(PLUGIN_ID, `/projects/${projectId}/skills/${skill.name}`),
+    { enabled: isOpen },
+  );
+
+  return (
+    <div>
+      <div style={rowStyle}>
+        <button type="button" style={rowButtonStyle} onClick={onToggle}>
+          <ChevronRight size={12} style={{ ...chevronStyle(isOpen), flexShrink: 0 }} />
+          <Folder size={14} style={{ opacity: 0.6, flexShrink: 0 }} />
+          <span style={truncateStyle}>{skill.name}</span>
+        </button>
+        <div style={{ position: "relative" }} ref={menuOpen ? menuRef : undefined}>
+          <button type="button" style={menuButtonStyle} onClick={onMenuToggle}>
+            <MoreHorizontal size={13} />
+          </button>
+          {menuOpen && (
+            <div style={menuPopoverStyle}>
+              <button
+                type="button"
+                style={menuItemStyle}
+                onClick={() => {
+                  onMenuToggle();
+                  onDelete();
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+      {isOpen && (
+        <>
+          <button type="button" style={fileRowStyle} onClick={onOpen}>
+            <FileText size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
+            <span style={truncateStyle}>SKILL.md</span>
+          </button>
+          {detail.isLoading && <div style={fileRowStyle}>Loading files…</div>}
+          {detail.data?.files?.map((f) => (
+            <button key={f.path} type="button" style={fileRowStyle} onClick={onOpen}>
+              <FileText size={13} style={{ opacity: 0.6, flexShrink: 0 }} />
+              <span style={truncateStyle}>{f.path}</span>
+            </button>
+          ))}
+        </>
       )}
     </div>
   );
