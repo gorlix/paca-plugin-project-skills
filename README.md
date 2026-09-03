@@ -158,7 +158,100 @@ Both simply call this plugin's own `GET /projects/:projectId/skills[...]`
 routes via `PluginAPIClient` — no separate backend logic. Verified against a
 real running instance by driving the actual MCP server binary
 (`apps/mcp/build/index.js`) over stdio with real JSON-RPC `initialize` /
-`tools/call` messages, not just a direct function-call test.
+`tools/call` messages, not just a direct function-call test — and again by
+loading two real, substantial local skills (one plain, one with three
+`references/*.md` files) end-to-end: created via the API, content pasted
+into the real Documentation editor, then read back correctly through both
+`GET .../skills/:name` and `project_skills_get` (27KB combined for the
+multi-file one — SKILL.md plus all three reference files in one response).
+
+## For an AI agent: reading and loading skills without a human
+
+Everything below works from a fresh agent session with only HTTP access —
+no browser, no prior context on this repo beyond this file.
+
+### Reading skills (MCP — read-only)
+
+If your MCP client is already connected to this Paca instance's MCP server
+(`@paca-ai/paca-mcp`, or however this deployment names it) and this plugin
+is enabled, `project_skills_list` and `project_skills_get` (see table
+above) just appear alongside Paca's own core tools — no extra setup. If it
+isn't connected yet, you need three environment variables when configuring
+that MCP server (see `Paca-AI/paca`'s own `apps/mcp` for the exact client
+config format — Claude Desktop's `claude_desktop_config.json`, a
+`.mcp.json`, etc., all just set `env` for the server process the same way):
+
+```json
+{
+  "PACA_API_URL": "https://<your-paca-instance>",
+  "PACA_GATEWAY_URL": "https://<your-paca-instance>",
+  "PACA_API_KEY": "paca_..."
+}
+```
+
+Get a `PACA_API_KEY` via `POST /api/v1/users/me/api-keys {"name": "..."}` —
+the response's `key` field is shown once, store it. `PACA_GATEWAY_URL` is
+what the MCP server resolves this plugin's `mcp.remoteEntryUrl` against
+(the manifest's URL is relative, e.g. `/plugins-mcp/...`); for most
+deployments it's the same origin as `PACA_API_URL`.
+
+### Loading a skill (raw HTTP — no UI, no BlockNote editor needed)
+
+A skill's body is a real Documentation entry (see "A skill's body is a real
+project Document" above) — but a Document's `content` is a BlockNote block
+*array*, not a markdown string, even though this plugin renders it back to
+markdown for you on read. You don't need BlockNote or a browser to write
+one: the block schema is plain JSON, and the two shapes below cover
+everything a typical SKILL.md needs (this plugin's own
+`backend/markdown.go` — the same code that renders `GET .../skills/:name`
+— accepts exactly this shape, so what you send is exactly what a reader
+gets back):
+
+```jsonc
+// A heading
+{ "type": "heading", "props": { "level": 2 },
+  "content": [{ "type": "text", "text": "Section title", "styles": {} }] }
+
+// A paragraph
+{ "type": "paragraph",
+  "content": [{ "type": "text", "text": "Plain instructions here.", "styles": {} }] }
+```
+
+(`bulletListItem`/`numberedListItem`/`codeBlock`/`checkListItem`/`quote`
+work too — see the type table in `backend/markdown.go`'s doc comment — but
+heading + paragraph alone already cover most skill bodies.)
+
+Full recipe, three requests:
+
+```bash
+# 1. Create the Document — content can be set directly at creation.
+curl -X POST "$PACA_URL/api/v1/projects/$PROJECT_ID/docs" \
+  -H "Content-Type: application/json" -b "$COOKIES_OR_AUTH" \
+  -d '{
+        "title": "my-new-skill",
+        "content": [
+          { "type": "paragraph",
+            "content": [{ "type": "text", "text": "Do X, then Y.", "styles": {} }] }
+        ]
+      }'
+# → note the returned "id" as $DOC_ID
+
+# 2. Link it as a skill. "name" gets a "paca-" prefix if missing.
+curl -X POST "$PACA_URL/api/v1/plugins/com.gorlix.project-skills/projects/$PROJECT_ID/skills" \
+  -H "Content-Type: application/json" -b "$COOKIES_OR_AUTH" \
+  -d "{\"name\": \"my-new-skill\", \"description\": \"What it does and when to use it.\", \"doc_id\": \"$DOC_ID\"}"
+
+# 3. Optional: attach references/scripts files (see the table in the
+#    "Multi-file skills" section above for the path rules).
+curl -X POST "$PACA_URL/api/v1/plugins/com.gorlix.project-skills/projects/$PROJECT_ID/skills/paca-my-new-skill/files" \
+  -H "Content-Type: application/json" -b "$COOKIES_OR_AUTH" \
+  -d '{"path": "references/notes.md", "content": "Extra detail that would clutter the main body."}'
+```
+
+Auth is whatever this deployment already gives you — the same session
+cookie a browser would have, or an `X-API-Key` header with a key from step
+"Reading skills" above, depending on how `optionalAuthn` is configured for
+this instance.
 
 ## Testing
 
