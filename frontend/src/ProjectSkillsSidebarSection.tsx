@@ -26,6 +26,21 @@ function Content({ api, ui, projectId, isCollapsed }: SidebarProjectSectionProps
     api.pluginGet<SkillSummary[]>(PLUGIN_ID, `/projects/${projectId}/skills`),
   );
 
+  // ProjectSkillsPage (the project.page metadata form) is a separate
+  // RemoteComponent mount with its own PluginQueryClientProvider — the host
+  // doesn't share one queryClient between extension points, so a skill
+  // created/edited there can't invalidate this component's cache directly.
+  // It dispatches this event after every mutation instead; confirmed live
+  // that without this, a skill created via the page didn't show up here
+  // after an in-app navigation, only after a full page reload.
+  useEffect(() => {
+    function onSkillsChanged() {
+      void queryClient.invalidateQueries({ queryKey: ["plugin", PLUGIN_ID, "skills", projectId] });
+    }
+    window.addEventListener("paca:project-skills-changed", onSkillsChanged);
+    return () => window.removeEventListener("paca:project-skills-changed", onSkillsChanged);
+  }, [queryClient, projectId]);
+
   useEffect(() => {
     if (!menuOpenFor) return;
     function onDocClick(e: MouseEvent) {
@@ -65,6 +80,7 @@ function Content({ api, ui, projectId, isCollapsed }: SidebarProjectSectionProps
       await api.pluginDelete(PLUGIN_ID, `/projects/${projectId}/skills/${name}`);
       ui.toast({ title: "Deleted", variant: "success" });
       await queryClient.invalidateQueries({ queryKey: ["plugin", PLUGIN_ID, "skills", projectId] });
+      window.dispatchEvent(new Event("paca:project-skills-changed"));
     } catch (err) {
       ui.toast({ title: "Delete failed", description: String(err), variant: "destructive" });
     }

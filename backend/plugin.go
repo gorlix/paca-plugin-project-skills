@@ -739,9 +739,22 @@ func renderSkillMD(name, description string, triggers []string, body string) str
 	return b.String()
 }
 
+// yamlQuote escapes s for embedding in a YAML double-quoted scalar. Beyond
+// backslash and the quote character itself, this also escapes newline/
+// carriage-return/tab: a *literal* control byte left unescaped inside a
+// double-quoted flow scalar doesn't break YAML parsing outright (the spec's
+// line-folding rule for double-quoted scalars accepts it), but it silently
+// collapses into a single space on read-back — verified against a real
+// parser (PyYAML): a description containing a genuine newline round-tripped
+// as "line one line two", quietly losing the line break. Escaping it as the
+// two-character `\n` sequence instead makes the same parser hand back the
+// real newline, faithfully.
 func yamlQuote(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\r`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
 	return `"` + s + `"`
 }
 

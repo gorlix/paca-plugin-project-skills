@@ -73,7 +73,17 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
   const [fileFormContent, setFileFormContent] = useState("");
 
   async function invalidateList() {
+    // Invalidating this component's own queryClient is close to a no-op for
+    // anyone else: ProjectSkillsPage and ProjectSkillsSidebarSection are two
+    // independently-mounted RemoteComponent trees (one in the sidebar, one
+    // routed as the page), and neither host call site
+    // (app-sidebar.tsx / the plugins/$pluginId/$slug route) passes a shared
+    // `queryClient` prop into PluginQueryClientProvider — confirmed live: a
+    // skill created here didn't appear in the sidebar after a soft in-app
+    // navigation, only after a full reload. The window event is what
+    // actually reaches the sidebar's own separate cache.
     await queryClient.invalidateQueries({ queryKey: ["plugin", PLUGIN_ID, "skills", projectId] });
+    window.dispatchEvent(new Event("paca:project-skills-changed"));
   }
 
   function closeFileForm() {
@@ -276,6 +286,18 @@ function Content({ api, ui, projectId }: ProjectPageProps) {
     if (!path) {
       ui.toast({ title: "path is required", variant: "destructive" });
       return;
+    }
+    // Upsert semantics mean saving a *new* file under a path that already
+    // exists silently overwrites it — the path field is only disabled in
+    // the "edit an existing file" flow, so a fat-fingered "+ Add file" path
+    // that happens to collide would otherwise clobber it with no warning.
+    if (!fileFormEditing && files.some((f) => f.path === path)) {
+      const overwrite = await ui.confirm({
+        title: `"${path}" already exists`,
+        description: "Saving will overwrite its current content.",
+        variant: "destructive",
+      });
+      if (!overwrite) return;
     }
     try {
       await api.pluginPost<SkillFile>(

@@ -569,6 +569,27 @@ func TestDecodeTriggersMalformedJSONReturnsNil(t *testing.T) {
 	}
 }
 
+func TestYamlQuoteEscapesControlCharacters(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"plain", "hello", `"hello"`},
+		{"backslash", `a\b`, `"a\\b"`},
+		{"double quote", `say "hi"`, `"say \"hi\""`},
+		{"newline", "line one\nline two", `"line one\nline two"`},
+		{"carriage return", "a\rb", `"a\rb"`},
+		{"tab", "a\tb", `"a\tb"`},
+	}
+	for _, c := range cases {
+		got := yamlQuote(c.in)
+		if got != c.want {
+			t.Errorf("%s: yamlQuote(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
 func TestNormalizeNameEdgeCases(t *testing.T) {
 	cases := []struct {
 		in      string
@@ -630,6 +651,87 @@ func TestBlocksToMarkdown(t *testing.T) {
 			`[{"type":"bulletListItem","content":[{"type":"text","text":"a","styles":{}}]},
 			  {"type":"bulletListItem","content":[{"type":"text","text":"b","styles":{}}]}]`,
 			"- a\n- b",
+		},
+		{"malformed json", "{not json", ""},
+		{
+			"heading level clamped below 1",
+			`[{"type":"heading","props":{"level":0},"content":[{"type":"text","text":"x","styles":{}}]}]`,
+			"# x",
+		},
+		{
+			"heading level clamped above 6",
+			`[{"type":"heading","props":{"level":99},"content":[{"type":"text","text":"x","styles":{}}]}]`,
+			"###### x",
+		},
+		{
+			"heading with no level defaults to 1",
+			`[{"type":"heading","props":{},"content":[{"type":"text","text":"x","styles":{}}]}]`,
+			"# x",
+		},
+		{
+			"checklist unchecked and checked",
+			`[{"type":"checkListItem","props":{"checked":false},"content":[{"type":"text","text":"todo","styles":{}}]},
+			  {"type":"checkListItem","props":{"checked":true},"content":[{"type":"text","text":"done","styles":{}}]}]`,
+			"- [ ] todo\n- [x] done",
+		},
+		{
+			"code block with language",
+			`[{"type":"codeBlock","props":{"language":"go"},"content":[{"type":"text","text":"fmt.Println(1)","styles":{}}]}]`,
+			"```go\nfmt.Println(1)\n```",
+		},
+		{
+			"code block with no language",
+			`[{"type":"codeBlock","props":{},"content":[{"type":"text","text":"echo hi","styles":{}}]}]`,
+			"```\necho hi\n```",
+		},
+		{
+			"quote",
+			`[{"type":"quote","content":[{"type":"text","text":"be excellent","styles":{}}]}]`,
+			"> be excellent",
+		},
+		{
+			"numbered list resets across an interruption",
+			`[{"type":"numberedListItem","content":[{"type":"text","text":"one","styles":{}}]},
+			  {"type":"numberedListItem","content":[{"type":"text","text":"two","styles":{}}]},
+			  {"type":"paragraph","content":[{"type":"text","text":"interrupt","styles":{}}]},
+			  {"type":"numberedListItem","content":[{"type":"text","text":"restarts at one","styles":{}}]}]`,
+			"1. one\n2. two\ninterrupt\n\n1. restarts at one",
+		},
+		{
+			"nested bullet list under a parent item",
+			`[{"type":"bulletListItem","content":[{"type":"text","text":"parent","styles":{}}],
+			   "children":[{"type":"bulletListItem","content":[{"type":"text","text":"child","styles":{}}]}]}]`,
+			"- parent\n  - child",
+		},
+		{
+			"link",
+			`[{"type":"paragraph","content":[{"type":"link","href":"https://example.com","content":[{"type":"text","text":"click","styles":{}}]}]}]`,
+			"[click](https://example.com)",
+		},
+		{
+			"italic and strike",
+			`[{"type":"paragraph","content":[
+				{"type":"text","text":"a","styles":{"italic":true}},
+				{"type":"text","text":"b","styles":{"strike":true}}
+			]}]`,
+			"_a_~~b~~",
+		},
+		{
+			"unknown block type falls back to its text content",
+			`[{"type":"someFutureBlockType","content":[{"type":"text","text":"still readable","styles":{}}]}]`,
+			"still readable",
+		},
+		{
+			"unknown block type with empty content is omitted",
+			`[{"type":"someFutureBlockType","content":[]}]`,
+			"",
+		},
+		{
+			"empty paragraph produces a blank line, trimmed at the edges",
+			`[{"type":"paragraph","content":[{"type":"text","text":"before","styles":{}}]},
+			  {"type":"paragraph","content":[]},
+			  {"type":"paragraph","content":[{"type":"text","text":"after","styles":{}}]}]`,
+			"before\n\n\nafter",
 		},
 	}
 	for _, c := range cases {
